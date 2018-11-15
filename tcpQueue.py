@@ -100,6 +100,7 @@ if __name__ == ‘__main__’:
 import threading
 import socket
 import zlib
+
 try:
     import cPickle as pickle
 except ImportError:
@@ -128,16 +129,20 @@ prodLock = threading.Lock()
 workerLock = threading.Lock()
 logLock = threading.Lock()
 
+
 def logger(msg, SYSLOGID="pyTCPQueue"):
     """Sends alerts to nmSys or to syslog if nmSys not defined."""
-    if len(str(msg)) < 1: return # Bail if no message was sent.
+    if len(str(msg)) < 1:
+        return  # Bail if no message was sent.
 
     logLock.acquire()
-    if 'DEBUG' in globals() and DEBUG is True: # If in DEBUG mode, just print and return.
+    if (
+        "DEBUG" in globals() and DEBUG is True
+    ):  # If in DEBUG mode, just print and return.
         print("%s: %s" % (SYSLOGID, str(msg)))
     else:
         try:
-            sendAlert(node(), str(msg), 'warn', 'rad-sre@%s' % SYSLOGID)
+            sendAlert(node(), str(msg), "warn", "rad-sre@%s" % SYSLOGID)
         except:
             syslog.openlog(SYSLOGID)
             syslog.syslog(str(msg))
@@ -145,6 +150,7 @@ def logger(msg, SYSLOGID="pyTCPQueue"):
 
     logLock.release()
     return
+
 
 def manageWorkers():
     """Keeps the workers clean and the memory low"""
@@ -157,7 +163,7 @@ def manageWorkers():
                     worker.join(0.1)
                 else:
                     workerQueue.appendleft(worker)
-                del(worker)
+                del (worker)
             workerLock.release()
             return
         sleep(10)
@@ -171,11 +177,16 @@ def manageWorkers():
                 worker.join(0.1)
             else:
                 workerQueue.append(worker)
-            if 'worker' in locals(): del(worker)
+            if "worker" in locals():
+                del (worker)
         workerLock.release()
-        if 'i' in locals(): del(i)
-        if 'worker' in locals(): del(worker)
-        if 'workers' in locals(): del(workers)
+        if "i" in locals():
+            del (i)
+        if "worker" in locals():
+            del (worker)
+        if "workers" in locals():
+            del (workers)
+
 
 def controllingThread(sock):
     """Starts up new client sockets as needed"""
@@ -191,13 +202,14 @@ def controllingThread(sock):
             workerLock.acquire()
             workerQueue.appendleft(worker)
             workerLock.release()
-            del(worker)
-            del(client_sock)
-            del(sockname)
+            del (worker)
+            del (client_sock)
+            del (sockname)
         except Exception as ex:
             logger("Unable to accept connection: %s" % str(ex))
             sleep(1)
             continue
+
 
 def serverThread(client_sock):
     """Manages the server socket."""
@@ -213,19 +225,24 @@ def serverThread(client_sock):
                 client_sock.close()
             except:
                 pass
-            if 'cnt' in locals(): del(cnt)
-            if 'total' in locals(): del(total)
-            if 'sockData' in locals(): del(sockData)
-            if 'inData' in locals(): del(inData)
-            if 'client_sock' in locals(): del(client_sock)
+            if "cnt" in locals():
+                del (cnt)
+            if "total" in locals():
+                del (total)
+            if "sockData" in locals():
+                del (sockData)
+            if "inData" in locals():
+                del (inData)
+            if "client_sock" in locals():
+                del (client_sock)
             exit(0)
         try:
-            cnt = ''
-            total = ''
-            sockData = ''
-            while cnt != ':' and len(total) < 10:
+            cnt = ""
+            total = ""
+            sockData = ""
+            while cnt != ":" and len(total) < 10:
                 cnt = client_sock.recv(1)
-                if cnt == '': # A '' means the socket was closed on us. Bail.
+                if cnt == "":  # A '' means the socket was closed on us. Bail.
                     try:
                         client_sock.shutdown(socket.SHUT_RDWR)
                     except:
@@ -234,14 +251,21 @@ def serverThread(client_sock):
                         client_sock.close()
                     except:
                         pass
-                    if 'cnt' in locals(): del(cnt)
-                    if 'total' in locals(): del(total)
-                    if 'sockData' in locals(): del(sockData)
-                    if 'client_sock' in locals(): del(client_sock)
+                    if "cnt" in locals():
+                        del (cnt)
+                    if "total" in locals():
+                        del (total)
+                    if "sockData" in locals():
+                        del (sockData)
+                    if "client_sock" in locals():
+                        del (client_sock)
                     exit(0)
                 total += cnt
             if len(total) > 9:
-                logger("Invalid TCP message received. Closing connection: %s" % str(total[:9]))
+                logger(
+                    "Invalid TCP message received. Closing connection: %s"
+                    % str(total[:9])
+                )
                 try:
                     client_sock.shutdown(socket.SHUT_RDWR)
                 except:
@@ -250,15 +274,19 @@ def serverThread(client_sock):
                     client_sock.close()
                 except:
                     pass
-                if 'cnt' in locals(): del(cnt)
-                if 'total' in locals(): del(total)
-                if 'sockData' in locals(): del(sockData)
-                if 'client_sock' in locals(): del(client_sock)
+                if "cnt" in locals():
+                    del (cnt)
+                if "total" in locals():
+                    del (total)
+                if "sockData" in locals():
+                    del (sockData)
+                if "client_sock" in locals():
+                    del (client_sock)
                 exit(0)
             total = int(total[:-1])
             while len(sockData) < total:
                 inData = client_sock.recv(total - len(sockData))
-                if inData == '':
+                if inData == "":
                     try:
                         # shutdown will fail if the socket was closed from the other side.
                         client_sock.shutdown(socket.SHUT_RDWR)
@@ -269,15 +297,20 @@ def serverThread(client_sock):
                         client_sock.close()
                     except:
                         pass
-                    if 'cnt' in locals(): del(cnt)
-                    if 'total' in locals(): del(total)
-                    if 'sockData' in locals(): del(sockData)
-                    if 'inData' in locals(): del(inData)
-                    if 'client_sock' in locals(): del(client_sock)
+                    if "cnt" in locals():
+                        del (cnt)
+                    if "total" in locals():
+                        del (total)
+                    if "sockData" in locals():
+                        del (sockData)
+                    if "inData" in locals():
+                        del (inData)
+                    if "client_sock" in locals():
+                        del (client_sock)
                     exit(0)
                 sockData += inData
             cmd = lower(str(sockData))[0]
-            if cmd == 'c':
+            if cmd == "c":
                 consumerLock.acquire()
                 if len(consumerQueue) > 0:
                     data = consumerQueue.pop()
@@ -285,8 +318,8 @@ def serverThread(client_sock):
                     consumerQueue.clear()
                     data = zlib.compress(pickle.dumps([]), 1)
                 consumerLock.release()
-                client_sock.sendall('%d:%s' % (len(data), data))
-            elif cmd == 'p':
+                client_sock.sendall("%d:%s" % (len(data), data))
+            elif cmd == "p":
                 prodLock.acquire()
                 if len(producerQueue) > 0:
                     data = producerQueue.pop()
@@ -294,12 +327,12 @@ def serverThread(client_sock):
                     producerQueue.clear()
                     data = zlib.compress(pickle.dumps([]), 1)
                 prodLock.release()
-                client_sock.sendall('%d:%s' % (len(data), data))
+                client_sock.sendall("%d:%s" % (len(data), data))
             else:
                 prodLock.acquire()
                 producerQueue.appendleft(sockData)
                 prodLock.release()
-            del(cmd)
+            del (cmd)
         except Exception as ex:
             logger("Unable to process socket connection: %s" % str(ex))
             try:
@@ -310,22 +343,35 @@ def serverThread(client_sock):
                 client_sock.close()
             except:
                 pass
-            if 'cnt' in locals(): del(cnt)
-            if 'total' in locals(): del(total)
-            if 'sockData' in locals(): del(sockData)
-            if 'inData' in locals(): del(inData)
-            if 'data' in locals(): del(data)
-            if 'client_sock' in locals(): del(client_sock)
+            if "cnt" in locals():
+                del (cnt)
+            if "total" in locals():
+                del (total)
+            if "sockData" in locals():
+                del (sockData)
+            if "inData" in locals():
+                del (inData)
+            if "data" in locals():
+                del (data)
+            if "client_sock" in locals():
+                del (client_sock)
             exit(0)
 
-        if 'cnt' in locals(): del(cnt)
-        if 'total' in locals(): del(total)
-        if 'sockData' in locals(): del(sockData)
-        if 'inData' in locals(): del(inData)
-        if 'data' in locals(): del(data)
+        if "cnt" in locals():
+            del (cnt)
+        if "total" in locals():
+            del (total)
+        if "sockData" in locals():
+            del (sockData)
+        if "inData" in locals():
+            del (inData)
+        if "data" in locals():
+            del (data)
+
 
 class myQueue(object):
     """This is the main TCP Queue class."""
+
     def __str__(self):
         """This routine will be called with a str(Class) call and will return
         an str representation of all the variables defined within the class.
@@ -333,6 +379,7 @@ class myQueue(object):
         variable name, the second is the value. The variables are alphabetized.
         [['varname', 'value'], ['varname2', 'value2'] [...]]"""
         from inspect import getmembers, isroutine
+
         myDict = dict()
         for name, obj in getmembers(self):
             # Variables that start with __ are "private" so shouldn't be displayed.
@@ -345,11 +392,14 @@ class myQueue(object):
         for i in sorted(myDict.keys()):
             retval.append([i, myDict[i]])
         myDict.clear()
-        del(myDict)
-        if 'name' in locals(): del(name)
-        if 'obj' in locals(): del(obj)
-        if 'i' in locals(): del(i)
-        return(str(retval))
+        del (myDict)
+        if "name" in locals():
+            del (name)
+        if "obj" in locals():
+            del (obj)
+        if "i" in locals():
+            del (i)
+        return str(retval)
 
     def __init__(self, host="127.0.0.1", port=49152):
         """Initializes the queueing system but does not start the queues.
@@ -378,8 +428,12 @@ class myQueue(object):
             # Start sending immediately. Screw Nagle
             self.ssock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.ssock.bind(self.myAddr)
-            self.ssock.listen(128) # Allow a queue of connections waiting to be processed
-            self.socketThread = threading.Thread(target=controllingThread, args=(self.ssock,))
+            self.ssock.listen(
+                128
+            )  # Allow a queue of connections waiting to be processed
+            self.socketThread = threading.Thread(
+                target=controllingThread, args=(self.ssock,)
+            )
             self.socketThread.daemon = True
             self.socketThread.start()
             self.workerThread = threading.Thread(target=manageWorkers)
@@ -414,10 +468,11 @@ class myQueue(object):
                 self.csock.close()
             except Exception as ex:
                 logger("Unable to stop Consumer connection: %s" % str(ex))
-            del(self.csock)
+            del (self.csock)
             self.csock = None
         for name, obj in getmembers(self):
-            if name.startswith('__'): continue # Ignore private stuff
+            if name.startswith("__"):
+                continue  # Ignore private stuff
             if type(obj) is dict:
                 try:
                     eval("self.%s.clear()" % name)
@@ -428,8 +483,10 @@ class myQueue(object):
                     eval("self.%s[:] = []" % name)
                 except Exception as ex:
                     print("Unable to clear list %s: %s" % (name, str(ex)))
-        if 'name' in locals(): del(name)
-        if 'obj' in locals(): del(obj)
+        if "name" in locals():
+            del (name)
+        if "obj" in locals():
+            del (obj)
         return
 
     def getConsumer(self):
@@ -440,57 +497,75 @@ class myQueue(object):
         if self.csock is None:
             self.startClient()
             if self.csock is None:
-                return([])
+                return []
         try:
             self.csock.sendall("1:c")
-            cnt = ''
-            total = ''
-            sockData = ''
-            while cnt != ':' and len(total) < 10:
+            cnt = ""
+            total = ""
+            sockData = ""
+            while cnt != ":" and len(total) < 10:
                 cnt = self.csock.recv(1)
-                if cnt == '':
+                if cnt == "":
                     self.close()
-                    if 'cnt' in locals(): del(cnt)
-                    if 'total' in locals(): del(total)
-                    if 'sockData' in locals(): del(sockData)
-                    return([])
+                    if "cnt" in locals():
+                        del (cnt)
+                    if "total" in locals():
+                        del (total)
+                    if "sockData" in locals():
+                        del (sockData)
+                    return []
                 total += cnt
             if len(total) > 9:
-                logger("Invalid TCP Consumer message received. Closing connection: %s" % str(total[:9]))
+                logger(
+                    "Invalid TCP Consumer message received. Closing connection: %s"
+                    % str(total[:9])
+                )
                 self.close()
-                if 'cnt' in locals(): del(cnt)
-                if 'total' in locals(): del(total)
-                if 'sockData' in locals(): del(sockData)
-                return([])
+                if "cnt" in locals():
+                    del (cnt)
+                if "total" in locals():
+                    del (total)
+                if "sockData" in locals():
+                    del (sockData)
+                return []
             total = int(total[:-1])
             while len(sockData) < total:
                 inData = self.csock.recv(total - len(sockData))
-                if inData == '':
+                if inData == "":
                     self.close()
-                    if 'cnt' in locals(): del(cnt)
-                    if 'total' in locals(): del(total)
-                    if 'sockData' in locals(): del(sockData)
-                    if 'inData' in locals(): del(inData)
-                    return([])
+                    if "cnt" in locals():
+                        del (cnt)
+                    if "total" in locals():
+                        del (total)
+                    if "sockData" in locals():
+                        del (sockData)
+                    if "inData" in locals():
+                        del (inData)
+                    return []
                 sockData += inData
             try:
                 data = pickle.loads(zlib.decompress(sockData))
             except:
                 data = zlib.decompress(sockData)
-            del(cnt)
-            del(total)
-            del(sockData)
-            del(inData)
-            return(data)
+            del (cnt)
+            del (total)
+            del (sockData)
+            del (inData)
+            return data
         except Exception as ex:
             logger("Unable to receive data: %s" % str(ex))
         self.close()
-        if 'cnt' in locals(): del(cnt)
-        if 'total' in locals(): del(total)
-        if 'sockData' in locals(): del(sockData)
-        if 'inData' in locals(): del(inData)
-        if 'data' in locals(): del(data)
-        return([])
+        if "cnt" in locals():
+            del (cnt)
+        if "total" in locals():
+            del (total)
+        if "sockData" in locals():
+            del (sockData)
+        if "inData" in locals():
+            del (inData)
+        if "data" in locals():
+            del (data)
+        return []
 
     def sendToProducer(self, blob):
         """Sends data from the client to the Producer queue for processing by the server
@@ -514,8 +589,9 @@ class myQueue(object):
                 self.close()
                 logger("Unable to send data: %s" % str(ex))
                 sleep(random() * 2)
-        del(sndcnt)
-        if 'data' in locals(): del(data)
+        del (sndcnt)
+        if "data" in locals():
+            del (data)
         return
 
     def sendToConsumer(self, blob):
@@ -527,7 +603,7 @@ class myQueue(object):
         consumerLock.acquire()
         consumerQueue.appendleft(data)
         consumerLock.release()
-        del(data)
+        del (data)
         return
 
     def getProducer(self):
@@ -539,58 +615,79 @@ class myQueue(object):
             self.startClient()
             if self.csock is None:
                 logger("Unable to get Producer data")
-                return([])
+                return []
         try:
             self.csock.sendall("1:p")
-            cnt = ''
-            total = ''
-            sockData = ''
-            while cnt != ':' and len(total) < 10:
+            cnt = ""
+            total = ""
+            sockData = ""
+            while cnt != ":" and len(total) < 10:
                 cnt = self.csock.recv(1)
-                if cnt == '':
+                if cnt == "":
                     self.close()
-                    if 'cnt' in locals(): del(cnt)
-                    if 'total' in locals(): del(total)
-                    if 'sockData' in locals(): del(sockData)
-                    return([])
+                    if "cnt" in locals():
+                        del (cnt)
+                    if "total" in locals():
+                        del (total)
+                    if "sockData" in locals():
+                        del (sockData)
+                    return []
                 total += cnt
             if len(total) > 9:
-                logger("Invalid TCP Producer message received. Closing connection: %s" % str(total[:9]))
+                logger(
+                    "Invalid TCP Producer message received. Closing connection: %s"
+                    % str(total[:9])
+                )
                 self.close()
-                if 'cnt' in locals(): del(cnt)
-                if 'total' in locals(): del(total)
-                if 'sockData' in locals(): del(sockData)
-                return([])
+                if "cnt" in locals():
+                    del (cnt)
+                if "total" in locals():
+                    del (total)
+                if "sockData" in locals():
+                    del (sockData)
+                return []
             total = int(total[:-1])
             while len(sockData) < total:
                 inData = self.csock.recv(total - len(sockData))
-                if inData == '':
+                if inData == "":
                     self.close()
-                    if 'cnt' in locals(): del(cnt)
-                    if 'total' in locals(): del(total)
-                    if 'sockData' in locals(): del(sockData)
-                    if 'inData' in locals(): del(inData)
-                    return([])
+                    if "cnt" in locals():
+                        del (cnt)
+                    if "total" in locals():
+                        del (total)
+                    if "sockData" in locals():
+                        del (sockData)
+                    if "inData" in locals():
+                        del (inData)
+                    return []
                 sockData += inData
         except Exception as ex:
             self.close()
             logger("Unable to receive data: %s" % str(ex))
             sleep(random() * 2)
-            if 'cnt' in locals(): del(cnt)
-            if 'total' in locals(): del(total)
-            if 'sockData' in locals(): del(sockData)
-            if 'inData' in locals(): del(inData)
-            return([])
+            if "cnt" in locals():
+                del (cnt)
+            if "total" in locals():
+                del (total)
+            if "sockData" in locals():
+                del (sockData)
+            if "inData" in locals():
+                del (inData)
+            return []
         try:
             data = pickle.loads(zlib.decompress(sockData))
         except:
             data = zlib.decompress(sockData)
 
-        if 'cnt' in locals(): del(cnt)
-        if 'total' in locals(): del(total)
-        if 'sockData' in locals(): del(sockData)
-        if 'inData' in locals(): del(inData)
-        return(data)
+        if "cnt" in locals():
+            del (cnt)
+        if "total" in locals():
+            del (total)
+        if "sockData" in locals():
+            del (sockData)
+        if "inData" in locals():
+            del (inData)
+        return data
 
     def clearQueues(self):
         consumerLock.acquire()
@@ -605,24 +702,24 @@ class myQueue(object):
         """Returns True if there is no data in the Producer queue, False otherwise.
         This function will only work on the server, not on the clients."""
         if self.PQSize() > 0:
-            return(False)
+            return False
         else:
-            return(True)
+            return True
 
     def isCQEmpty(self):
         """Returns True if there is no data in the Consumer queue, False otherwise.
         This function will only work on the server, not on the clients."""
         if self.CQSize() > 0:
-            return(False)
+            return False
         else:
-            return(True)
+            return True
 
     def CQSize(self):
         """Returns the number of elements in the Consumer queue.
         This function will only work on the server, not on the clients."""
-        return(len(consumerQueue))
+        return len(consumerQueue)
 
     def PQSize(self):
         """Returns the number of elements in the Producer queue.
         This function will only work on the server, not on the clients."""
-        return(len(producerQueue))
+        return len(producerQueue)
