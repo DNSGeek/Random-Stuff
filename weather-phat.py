@@ -1,4 +1,4 @@
-#!/home/pi/local/python/python3/bin/python3.7 -O
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import argparse
