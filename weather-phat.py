@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/pi/local/python/python3/bin/python3.7 -O
 # -*- coding: utf-8 -*-
 
 import argparse
@@ -20,20 +20,19 @@ except ImportError:
     )
 
 
-# Replace red with your InkyPHAT color
 inky_display = InkyPHAT("red")
 inky_display.set_border(inky_display.BLACK)
 
-# Set this to be the temperature to change color
+# Details to customise your weather display
+
 WARNING_TEMP = 80.0
 
 # Query Dark Sky (https://darksky.net/) to scrape current weather data
 def get_weather():
-    # Set your latitude and longitude here.
-    coords = (LAT, LONG)
-    # Get a dark sky API key at https://darksky.net/dev
+    coords = (37.3114, -121.9502)
     res = requests.get(
-        "https://api.darksky.net/forecast/MY_API_KLEY/%s,%s" % (coords[0], coords[1])
+        "https://api.darksky.net/forecast/446ae903db0f29d06aba0198041c44ab/%s,%s"
+        % (coords[0], coords[1])
     )
     if res.status_code == 200:
         curr = res.json()["currently"]
@@ -85,11 +84,10 @@ def main():
     masks = {}
     # Load our icon files and generate masks
     logger("Loading weather icons.")
-    respath = "/home/pi/bin"  # Set this to be where you put the script.
-    for root, idir, files in os.walk(f"{respath}/resources"):
+    for root, idir, files in os.walk("/home/pi/bin/resources"):
         for icon in fnmatch.filter(files, "icon-*.png"):
             icon_name = icon.split(".")[0].split("-")[1]
-            icon_image = Image.open(f"{respath}/resources/%s" % icon)
+            icon_image = Image.open("/home/pi/bin/resources/%s" % icon)
             icons[icon_name] = icon_image
             masks[icon_name] = create_mask(icon_image)
     logger("Created icon map: %s" % str(list(icons.keys())))
@@ -118,6 +116,25 @@ def main():
         "storm": ["stormy", "storm", "thunderstorm"],
         "wind": ["wind", "windy"],
     }
+    directions = {
+        0: "N",
+        22.5: "NNE",
+        45: "NE",
+        67.5: "ENE",
+        90: "E",
+        112.5: "ESE",
+        135: "SE",
+        157.5: "SSE",
+        180: "S",
+        202.5: "SSW",
+        225: "SW",
+        247.5: "WSW",
+        270: "W",
+        292.5: "WNW",
+        315: "NW",
+        337.5: "NNW",
+        360: "N",
+    }
 
     while True:
         logger("Top of loop.")
@@ -142,7 +159,9 @@ def main():
 
         logger("Got weather.")
         # Placeholder variables
-        humidity = 0
+        windBearing = 0
+        windSpeed = 0.0
+        windDir = ""
         temperature = 0
         weather_icon = None
 
@@ -150,7 +169,8 @@ def main():
             summary = str(weather["icon"]).lower()
             logger("summary = %s" % summary)
             temperature = int(round(weather["apparentTemperature"]))
-            humidity = int(round(float(weather["humidity"]) * 100.0))
+            windBearing = int(weather["windBearing"])
+            windSpeed = round(float(weather["windSpeed"]), 1)
 
             for icon in icon_map:
                 if summary in icon_map[icon]:
@@ -166,7 +186,7 @@ def main():
         # Create a new canvas to draw on
         logger("Creating image.")
         try:
-            img = Image.open(f"{respath}/resources/backdrop.png")
+            img = Image.open("/home/pi/bin/resources/backdrop.png")
             draw = ImageDraw.Draw(img)
 
             # Draw lines to frame the weather data
@@ -178,16 +198,13 @@ def main():
             # Write text with weather values to the canvas
             draw.text(
                 (36, 12),
-                time.strftime("%m/%d %I:%M", time.localtime(time.time() + 20)),
+                time.strftime("%b %d %I:%M", time.localtime(time.time() + 20)),
                 inky_display.WHITE,
                 font=font,
             )
 
-            # This assumes your weather is in F. Convert to C as appropriate.
             temp = "%dF %.1fC" % (
                 temperature,
-                # This converts F to C.
-                # int(round(((temp * 9.0) / 5.0) + 32.0)) to convert C to F.
                 ((weather["apparentTemperature"] - 32.0) * 5.0 / 9.0),
             )
             draw.text(
@@ -197,8 +214,18 @@ def main():
                 font=font,
             )
 
+            logger(f"windbearing = {windBearing}")
+            if windBearing in directions:
+                windDir = directions[windBearing]
+            else:
+                for i in range(17):
+                    if (i * 22.5) > windBearing:
+                        windDir = directions[(i - 1) * 22.5]
+                        break
+            logger(f"Wind is {windSpeed} MPH {windDir}")
+
             draw.text(
-                (72, 58), "{}% Humidity".format(humidity), inky_display.WHITE, font=font
+                (72, 58), f"{windSpeed} {windDir}", inky_display.WHITE, font=font
             )
 
             # Draw the current weather icon over the backdrop
@@ -214,12 +241,14 @@ def main():
             inky_display.set_image(img)
             inky_display.show()
         except Exception as ex:
-            logger(f"Uh oh: {ex}")
+            logger("Uh oh: %s" % str(ex))
             time.sleep(5)
             continue
         logger("Deleting local variables.")
         del draw
-        del humidity
+        del windBearing
+        del windSpeed
+        del windDir
         del temperature
         del weather_icon
         del weather

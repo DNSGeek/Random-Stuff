@@ -38,21 +38,26 @@ def timeit(some_func):
 
 def _VmB(VmKey: str = "VmRSS:") -> int:
     """A function to return, in bytes, how much RAM the current running process is using."""
-    _scale = {"kB": 1024.0, "mB": 1024.0 * 1024.0, "KB": 1024.0, "MB": 1024.0 * 1024.0}
+    _scale = {
+        "kB": 1024.0,
+        "mB": 1024.0 * 1024.0,
+        "KB": 1024.0,
+        "MB": 1024.0 * 1024.0,
+    }
     # get pseudo file  /proc/<pid>/status
     try:
         t = open("/proc/%d/status" % os.getpid())
         v = t.read()
         t.close()
-        del (t)
-    except:
+        del t
+    except IOError:
         return 0  # non-Linux?
     # get VmKey line e.g. 'VmRSS:  9999  kB\n ...'
     i = v.index(VmKey)
     v = v[i:].split(None, 3)  # whitespace
-    del (i)
+    del i
     if len(v) < 3:
-        del (v)
+        del v
         return 0  # invalid format?
         # convert Vm value to bytes
     return round(float(v[1]) * _scale[v[2]])
@@ -104,7 +109,9 @@ class TimeoutError(Exception):
     pass
 
 
-def timeout(seconds: float = 10.0, error_message: str = os.strerror(errno.ETIME)):
+def timeout(
+    seconds: float = 10.0, error_message: str = os.strerror(errno.ETIME)
+):
     """A wrapper function to allow you to specify a timeout value for any function.
     Usage:
     @timeout(2.5, 'Oops, you broke it')

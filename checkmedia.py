@@ -8,11 +8,11 @@ import fnmatch
 import hashlib
 import time
 import threading
-import Queue
+import queue
 import multiprocessing
 
 tlock = threading.Lock()
-tqueue = Queue.Queue()
+tqueue = queue.Queue()
 NUMTHREADS = int(multiprocessing.cpu_count() / 2)
 if NUMTHREADS <= 1:
     NUMTHREADS += 1
@@ -180,7 +180,7 @@ def hashThreads(cur, paths):
 
 
 if __name__ == "__main__":
-    print("Using %d CPUs." % NUMTHREADS)
+    print(("Using %d CPUs." % NUMTHREADS))
     conn, cur = openDB()
     if conn is None:
         exit(-1)
@@ -190,7 +190,7 @@ if __name__ == "__main__":
         files = getFileList(".")
     count = 0
     paths = {}
-    for i in xrange(0, NUMTHREADS):
+    for i in range(0, NUMTHREADS):
         paths[i] = []
     for path in files:
         paths[count].append(path)
@@ -198,7 +198,7 @@ if __name__ == "__main__":
         if count == NUMTHREADS:
             count = 0
     workers = []
-    for i in xrange(0, NUMTHREADS):
+    for i in range(0, NUMTHREADS):
         worker = threading.Thread(target=hashThreads, args=(cur, paths[i]))
         worker.daemon = True
         worker.start()
@@ -211,4 +211,4 @@ if __name__ == "__main__":
         workers.remove(worker)
     while not tqueue.empty():
         path = tqueue.get()
-        print("FIle %s updated" % str(path))
+        print(("FIle %s updated" % str(path)))

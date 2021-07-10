@@ -101,7 +101,10 @@ import threading
 import socket
 import zlib
 
-import pickle
+try:
+    import cPickle as pickle
+except ImportError:
+    import pickle
 from platform import node
 from time import sleep
 from random import random
@@ -160,13 +163,13 @@ def manageWorkers():
                     worker.join(0.1)
                 else:
                     workerQueue.appendleft(worker)
-                del worker
+                del (worker)
             workerLock.release()
             return
         sleep(10)
         workerLock.acquire()
         workers = []
-        for i in range(0, len(workerQueue)):
+        for i in xrange(0, len(workerQueue)):
             workers.append(workerQueue.pop())
         workerQueue.clear()
         for worker in workers:
@@ -175,14 +178,14 @@ def manageWorkers():
             else:
                 workerQueue.append(worker)
             if "worker" in locals():
-                del worker
+                del (worker)
         workerLock.release()
         if "i" in locals():
-            del i
+            del (i)
         if "worker" in locals():
-            del worker
+            del (worker)
         if "workers" in locals():
-            del workers
+            del (workers)
 
 
 def controllingThread(sock):
@@ -199,9 +202,9 @@ def controllingThread(sock):
             workerLock.acquire()
             workerQueue.appendleft(worker)
             workerLock.release()
-            del worker
-            del client_sock
-            del sockname
+            del (worker)
+            del (client_sock)
+            del (sockname)
         except Exception as ex:
             logger("Unable to accept connection: %s" % str(ex))
             sleep(1)
@@ -223,15 +226,15 @@ def serverThread(client_sock):
             except:
                 pass
             if "cnt" in locals():
-                del cnt
+                del (cnt)
             if "total" in locals():
-                del total
+                del (total)
             if "sockData" in locals():
-                del sockData
+                del (sockData)
             if "inData" in locals():
-                del inData
+                del (inData)
             if "client_sock" in locals():
-                del client_sock
+                del (client_sock)
             exit(0)
         try:
             cnt = ""
@@ -249,13 +252,13 @@ def serverThread(client_sock):
                     except:
                         pass
                     if "cnt" in locals():
-                        del cnt
+                        del (cnt)
                     if "total" in locals():
-                        del total
+                        del (total)
                     if "sockData" in locals():
-                        del sockData
+                        del (sockData)
                     if "client_sock" in locals():
-                        del client_sock
+                        del (client_sock)
                     exit(0)
                 total += cnt
             if len(total) > 9:
@@ -272,13 +275,13 @@ def serverThread(client_sock):
                 except:
                     pass
                 if "cnt" in locals():
-                    del cnt
+                    del (cnt)
                 if "total" in locals():
-                    del total
+                    del (total)
                 if "sockData" in locals():
-                    del sockData
+                    del (sockData)
                 if "client_sock" in locals():
-                    del client_sock
+                    del (client_sock)
                 exit(0)
             total = int(total[:-1])
             while len(sockData) < total:
@@ -295,15 +298,15 @@ def serverThread(client_sock):
                     except:
                         pass
                     if "cnt" in locals():
-                        del cnt
+                        del (cnt)
                     if "total" in locals():
-                        del total
+                        del (total)
                     if "sockData" in locals():
-                        del sockData
+                        del (sockData)
                     if "inData" in locals():
-                        del inData
+                        del (inData)
                     if "client_sock" in locals():
-                        del client_sock
+                        del (client_sock)
                     exit(0)
                 sockData += inData
             cmd = lower(str(sockData))[0]
@@ -329,7 +332,7 @@ def serverThread(client_sock):
                 prodLock.acquire()
                 producerQueue.appendleft(sockData)
                 prodLock.release()
-            del cmd
+            del (cmd)
         except Exception as ex:
             logger("Unable to process socket connection: %s" % str(ex))
             try:
@@ -341,29 +344,29 @@ def serverThread(client_sock):
             except:
                 pass
             if "cnt" in locals():
-                del cnt
+                del (cnt)
             if "total" in locals():
-                del total
+                del (total)
             if "sockData" in locals():
-                del sockData
+                del (sockData)
             if "inData" in locals():
-                del inData
+                del (inData)
             if "data" in locals():
-                del data
+                del (data)
             if "client_sock" in locals():
-                del client_sock
+                del (client_sock)
             exit(0)
 
         if "cnt" in locals():
-            del cnt
+            del (cnt)
         if "total" in locals():
-            del total
+            del (total)
         if "sockData" in locals():
-            del sockData
+            del (sockData)
         if "inData" in locals():
-            del inData
+            del (inData)
         if "data" in locals():
-            del data
+            del (data)
 
 
 class myQueue(object):
@@ -389,13 +392,13 @@ class myQueue(object):
         for i in sorted(myDict.keys()):
             retval.append([i, myDict[i]])
         myDict.clear()
-        del myDict
+        del (myDict)
         if "name" in locals():
-            del name
+            del (name)
         if "obj" in locals():
-            del obj
+            del (obj)
         if "i" in locals():
-            del i
+            del (i)
         return str(retval)
 
     def __init__(self, host="127.0.0.1", port=49152):
@@ -465,7 +468,7 @@ class myQueue(object):
                 self.csock.close()
             except Exception as ex:
                 logger("Unable to stop Consumer connection: %s" % str(ex))
-            del self.csock
+            del (self.csock)
             self.csock = None
         for name, obj in getmembers(self):
             if name.startswith("__"):
@@ -481,9 +484,9 @@ class myQueue(object):
                 except Exception as ex:
                     print("Unable to clear list %s: %s" % (name, str(ex)))
         if "name" in locals():
-            del name
+            del (name)
         if "obj" in locals():
-            del obj
+            del (obj)
         return
 
     def getConsumer(self):
@@ -505,11 +508,11 @@ class myQueue(object):
                 if cnt == "":
                     self.close()
                     if "cnt" in locals():
-                        del cnt
+                        del (cnt)
                     if "total" in locals():
-                        del total
+                        del (total)
                     if "sockData" in locals():
-                        del sockData
+                        del (sockData)
                     return []
                 total += cnt
             if len(total) > 9:
@@ -519,11 +522,11 @@ class myQueue(object):
                 )
                 self.close()
                 if "cnt" in locals():
-                    del cnt
+                    del (cnt)
                 if "total" in locals():
-                    del total
+                    del (total)
                 if "sockData" in locals():
-                    del sockData
+                    del (sockData)
                 return []
             total = int(total[:-1])
             while len(sockData) < total:
@@ -531,37 +534,37 @@ class myQueue(object):
                 if inData == "":
                     self.close()
                     if "cnt" in locals():
-                        del cnt
+                        del (cnt)
                     if "total" in locals():
-                        del total
+                        del (total)
                     if "sockData" in locals():
-                        del sockData
+                        del (sockData)
                     if "inData" in locals():
-                        del inData
+                        del (inData)
                     return []
                 sockData += inData
             try:
                 data = pickle.loads(zlib.decompress(sockData))
             except:
                 data = zlib.decompress(sockData)
-            del cnt
-            del total
-            del sockData
-            del inData
+            del (cnt)
+            del (total)
+            del (sockData)
+            del (inData)
             return data
         except Exception as ex:
             logger("Unable to receive data: %s" % str(ex))
         self.close()
         if "cnt" in locals():
-            del cnt
+            del (cnt)
         if "total" in locals():
-            del total
+            del (total)
         if "sockData" in locals():
-            del sockData
+            del (sockData)
         if "inData" in locals():
-            del inData
+            del (inData)
         if "data" in locals():
-            del data
+            del (data)
         return []
 
     def sendToProducer(self, blob):
@@ -586,9 +589,9 @@ class myQueue(object):
                 self.close()
                 logger("Unable to send data: %s" % str(ex))
                 sleep(random() * 2)
-        del sndcnt
+        del (sndcnt)
         if "data" in locals():
-            del data
+            del (data)
         return
 
     def sendToConsumer(self, blob):
@@ -600,7 +603,7 @@ class myQueue(object):
         consumerLock.acquire()
         consumerQueue.appendleft(data)
         consumerLock.release()
-        del data
+        del (data)
         return
 
     def getProducer(self):
@@ -623,11 +626,11 @@ class myQueue(object):
                 if cnt == "":
                     self.close()
                     if "cnt" in locals():
-                        del cnt
+                        del (cnt)
                     if "total" in locals():
-                        del total
+                        del (total)
                     if "sockData" in locals():
-                        del sockData
+                        del (sockData)
                     return []
                 total += cnt
             if len(total) > 9:
@@ -637,11 +640,11 @@ class myQueue(object):
                 )
                 self.close()
                 if "cnt" in locals():
-                    del cnt
+                    del (cnt)
                 if "total" in locals():
-                    del total
+                    del (total)
                 if "sockData" in locals():
-                    del sockData
+                    del (sockData)
                 return []
             total = int(total[:-1])
             while len(sockData) < total:
@@ -649,13 +652,13 @@ class myQueue(object):
                 if inData == "":
                     self.close()
                     if "cnt" in locals():
-                        del cnt
+                        del (cnt)
                     if "total" in locals():
-                        del total
+                        del (total)
                     if "sockData" in locals():
-                        del sockData
+                        del (sockData)
                     if "inData" in locals():
-                        del inData
+                        del (inData)
                     return []
                 sockData += inData
         except Exception as ex:
@@ -663,13 +666,13 @@ class myQueue(object):
             logger("Unable to receive data: %s" % str(ex))
             sleep(random() * 2)
             if "cnt" in locals():
-                del cnt
+                del (cnt)
             if "total" in locals():
-                del total
+                del (total)
             if "sockData" in locals():
-                del sockData
+                del (sockData)
             if "inData" in locals():
-                del inData
+                del (inData)
             return []
         try:
             data = pickle.loads(zlib.decompress(sockData))
@@ -677,13 +680,13 @@ class myQueue(object):
             data = zlib.decompress(sockData)
 
         if "cnt" in locals():
-            del cnt
+            del (cnt)
         if "total" in locals():
-            del total
+            del (total)
         if "sockData" in locals():
-            del sockData
+            del (sockData)
         if "inData" in locals():
-            del inData
+            del (inData)
         return data
 
     def clearQueues(self):
