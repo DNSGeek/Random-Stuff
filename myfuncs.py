@@ -8,6 +8,8 @@ from functools import wraps
 if "DEBUG" not in globals():
     DEBUG = False
 
+logging.basicConfig(format='%(asctime)s %(message)s')
+
 
 def timeit(some_func):
     """A wrapper function to tell you how long a function took to run."""
@@ -93,7 +95,7 @@ def Daemonize() -> None:
 
 
 class TimeoutError(Exception):
-    logging.error("The function timed out.")
+    pass
 
 
 def timeout(
