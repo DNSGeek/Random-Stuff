@@ -1,25 +1,12 @@
-import syslog
+import logging
 import signal
 import time
 import os
 import errno
 from functools import wraps
-from typing import Any
-from sys import stderr
 
 if "DEBUG" not in globals():
     DEBUG = False
-
-
-def logger(msg: Any, appname: str = "pyApp") -> None:
-    """A quick and dirty logging system"""
-    if DEBUG:
-        stderr.write("{} {}: {}\n".format(time.asctime(), appname, msg))
-    else:
-        syslog.openlog(appname)
-        syslog.syslog(str(msg))
-        syslog.closelog()
-    return
 
 
 def timeit(some_func):
@@ -30,14 +17,17 @@ def timeit(some_func):
         t1 = time.time()
         foo = some_func(*args, **kwargs)
         diff = time.time() - t1
-        logger("%s completed in %.5f seconds." % (some_func.__name__, diff))
+        logging.debug(
+            "%s completed in %.5f seconds." % (some_func.__name__, diff)
+        )
         return foo
 
     return wrapper
 
 
 def _VmB(VmKey: str = "VmRSS:") -> int:
-    """A function to return, in bytes, how much RAM the current running process is using."""
+    """A function to return, in bytes, how much RAM the current
+    running process is using."""
     _scale = {
         "kB": 1024.0,
         "mB": 1024.0 * 1024.0,
@@ -93,20 +83,17 @@ def Daemonize() -> None:
 
     # Use the OS defined "/dev/null" if exists.
     try:
-        from subprocess import DEVNULL
-
-        os.open(DEVNULL, os.O_RDWR)  # Redirect stdin to /dev/null
+        from subprocess import DEVNULL as devnull
     except ImportError:
         from os import devnull
-
-        os.open(devnull, os.O_RDWR)  # Redirect stdin to /dev/null
+    os.open(devnull, os.O_RDWR)  # Redirect stdin to /dev/null
     os.dup2(0, 1)  # Redirect stdout to /dev/null
     os.dup2(0, 2)  # Redirect stderr to /dev/null
     return
 
 
 class TimeoutError(Exception):
-    pass
+    logging.error("The function timed out.")
 
 
 def timeout(
@@ -119,7 +106,7 @@ def timeout(
         try:
             do_something_that_might_hang()
         except TimeoutError as TO:
-            logger("It timed out: %s" % str(TO))"""
+            logging.debug("It timed out: %s" % str(TO))"""
 
     def todec(func):
         def _timedOut(signum, frame):
