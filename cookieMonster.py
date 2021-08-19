@@ -1,4 +1,4 @@
-from base64 import b64decode, b64encode
+from base64 import b85decode, b85encode
 from cryptography.fernet import Fernet
 from hashlib import sha512
 from logging import error, warn
@@ -28,29 +28,33 @@ def makeCookie(data: Any, key: bytes = b"") -> str:
         key = Fernet.generate_key()
     try:
         f = Fernet(key)
+        pkey = b85encode(key)
         pdata = dumps(data)
-        cdata = b64encode(f.encrypt(pdata))
-        sha = sha512(cdata).hexdigest().upper()
+        cdata = b85encode(f.encrypt(pdata))
+        sha = b85encode(sha512(cdata).hexdigest().encode("utf-8")).decode(
+            "utf-8"
+        )
     except Exception as ex:
         error(f"Error encoding the cookie: {ex}")
         return ""
-    return f"{key.decode('utf-8')}{cdata.decode('utf-8')}{sha}"
+    return f"{pkey.decode('utf-8')}{cdata.decode('utf-8')}{sha}"
 
 
 def eatCookie(cookie: str) -> Union[Any, None]:
     """Pass in a string generated from makeCookie to get the
     original data, with full error checking to ensure that the
     data wasn't tampered with in transit."""
-    key = cookie[:44].encode("utf-8")
-    cdata = cookie[44:-128].encode("utf-8")
-    sha = sha512(cdata).hexdigest().upper()
-    digest = cookie[-128:]
+    pkey = cookie[:55].encode("utf-8")
+    key = b85decode(pkey)
+    cdata = cookie[55:-160].encode("utf-8")
+    sha = b85encode(sha512(cdata).hexdigest().encode("utf-8")).decode("utf-8")
+    digest = cookie[-160:]
     if sha != digest:
         warn("The data has been tampered with.")
         return None
     try:
         f = Fernet(key)
-        pdata = f.decrypt(b64decode(cdata))
+        pdata = f.decrypt(b85decode(cdata))
         data = loads(pdata)
         return data
     except Exception as ex:
