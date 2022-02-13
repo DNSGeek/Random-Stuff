@@ -1,10 +1,11 @@
+import unittest
 from base64 import b85decode, b85encode
-from cryptography.fernet import Fernet
 from hashlib import sha512
 from logging import error, warn
 from pickle import dumps, loads
 from typing import Any, Union
-import unittest
+
+from cryptography.fernet import Fernet
 
 
 class TestCookies(unittest.TestCase):
