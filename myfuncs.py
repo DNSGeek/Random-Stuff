@@ -8,7 +8,7 @@ from functools import wraps
 if "DEBUG" not in globals():
     DEBUG = False
 
-logging.basicConfig(format='%(asctime)s %(message)s')
+logging.basicConfig(format="%(asctime)s %(message)s")
 
 
 def timeit(some_func):
