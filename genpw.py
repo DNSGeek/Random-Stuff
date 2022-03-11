@@ -9895,7 +9895,7 @@ retlist = [
 def genPW(numwords: int):
     seed()
     pw = []
-    rll = len(retlist)
+    rll = len(retlist) - 1
     for i in range(numwords):
         pw.append(retlist[randint(0, rll)])
     print(" ".join(pw))
