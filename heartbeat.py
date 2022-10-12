@@ -663,12 +663,6 @@ if __name__ == "__main__":
 
     stderr.write("Starting new heartbeat daemon.\n")
 
-    if exists(f"{base_dir}/heartbeat.pid"):
-        try:
-            os.remove(pidfile)
-        except Exception as ex:
-            logging.info(f"Unable to remove pidfile: {ex}")
-
     logging.info("Checking for running process")
     checkForServer(args.process_name, caddr)
 
