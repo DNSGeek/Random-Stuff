@@ -121,9 +121,7 @@ def checkForServer(processname: str, caddr: Tuple) -> bool:
         srvcnt: int = 0
         for line in procs:
             line = line.strip().split()[0]
-            logging.debug(
-                f"Checking if process {line} matches {processname}"
-            )
+            logging.debug(f"Checking if process {line} matches {processname}")
             if line == processname:
                 srvcnt += 1
         logging.info(f"There are {srvcnt} running {processname} processes.")
@@ -254,10 +252,7 @@ def updateFile():
                 sfile.close()
                 os.chmod(
                     statefile,
-                    stat.S_IRUSR
-                    | stat.S_IWUSR
-                    | stat.S_IRGRP
-                    | stat.S_IROTH,
+                    stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
                 )
                 fstate = myState
             except Exception as ex:

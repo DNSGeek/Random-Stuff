@@ -2,7 +2,6 @@
 
 import sqlite3
 from sys import argv, exit
-from string import join
 import os
 import fnmatch
 import hashlib
@@ -122,7 +121,12 @@ def getDB(cur, path):
 def getFStat(path):
     try:
         fs = os.stat(path)
-        return [int(fs.st_size), int(fs.st_atime), int(fs.st_mtime), int(fs.st_ctime)]
+        return [
+            int(fs.st_size),
+            int(fs.st_atime),
+            int(fs.st_mtime),
+            int(fs.st_ctime),
+        ]
     except Exception as ex:
         logger("Unable to stat file %s: %s" % (str(path), str(ex)))
         return [0, 0, 0, 0]
@@ -139,7 +143,9 @@ def computeHash(path):
         f.close()
         return h.hexdigest()
     except Exception as ex:
-        logger("Unable to compute md5 checksum for %s: %s" % (str(path), str(ex)))
+        logger(
+            "Unable to compute md5 checksum for %s: %s" % (str(path), str(ex))
+        )
     return ""
 
 
@@ -163,7 +169,9 @@ def hashThreads(cur, paths):
         if dbhash is None:
             # logger("Creating new md5sum for %s" % str(fullpath))
             fhash = computeHash(fullpath)
-            insertDB(cur, fullpath, fhash, fstat[1], fstat[2], fstat[3], fstat[0])
+            insertDB(
+                cur, fullpath, fhash, fstat[1], fstat[2], fstat[3], fstat[0]
+            )
             continue
         if fstat[2] == mtime and fstat[3] == ctime and fstat[0] == size:
             # logger("Matching fstat for %s, continuing." % str(fullpath))
