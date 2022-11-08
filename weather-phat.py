@@ -8,7 +8,7 @@ import pickle
 import signal
 import time
 from daemonize import Daemonize
-from font_fredoka_one import FredokaOne
+from fonts.ttf import FredokaOne
 from inky import InkyPHAT
 from PIL import Image, ImageDraw, ImageFont
 
