@@ -192,7 +192,7 @@ def pingPong(processname: str, caddr: Tuple):
 
     while True:
         while gmtime().tm_sec % 5 != 0:
-            sleep(0.3)
+            sleep(0.7)
             if (
                 gmtime().tm_sec == offset
             ):  # Once a minute, try to get the state of the other server
