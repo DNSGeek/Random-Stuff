@@ -1,3 +1,5 @@
+#!/usr/bin/python3 -O
+
 import unittest
 from base64 import b85decode, b85encode
 from hashlib import sha512
