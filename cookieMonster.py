@@ -10,14 +10,6 @@ from typing import Any, Union
 from cryptography.fernet import Fernet
 
 
-class TestCookies(unittest.TestCase):
-    def test_cookies(self):
-        data = "This is a test"
-        cookie = makeCookie(data)
-        self.assertNotEqual(cookie, "")
-        self.assertEqual(eatCookie(cookie), data)
-
-
 def makeCookie(data: Any, key: bytes = b"") -> str:
     """If you pass in a key it must be 32 url-safe bytes encoded
     with base64, totaling 44 characters of base64. e.g.
@@ -63,6 +55,14 @@ def eatCookie(cookie: str) -> Union[Any, None]:
     except Exception as ex:
         error(f"Error decoding the cookie: {ex}")
         return None
+
+
+class TestCookies(unittest.TestCase):
+    def test_cookies(self):
+        data = "This is a test"
+        cookie = makeCookie(data)
+        self.assertNotEqual(cookie, "")
+        self.assertEqual(eatCookie(cookie), data)
 
 
 if __name__ == "__main__":

@@ -185,29 +185,6 @@ def manageWorkers():
             del workers
 
 
-def controllingThread(sock):
-    """Starts up new client sockets as needed"""
-    while True:
-        try:
-            # Wait until someone tries to connect to us.
-            client_sock, sockname = sock.accept()
-            # 13s of ping + up to 60s of HTTP(S) timeouts = 73 + 2 for transport overhead
-            client_sock.settimeout(75.0)
-            worker = threading.Thread(target=serverThread, args=(client_sock,))
-            worker.daemon = True
-            worker.start()
-            workerLock.acquire()
-            workerQueue.appendleft(worker)
-            workerLock.release()
-            del worker
-            del client_sock
-            del sockname
-        except Exception as ex:
-            logger("Unable to accept connection: %s" % str(ex))
-            sleep(1)
-            continue
-
-
 def serverThread(client_sock):
     """Manages the server socket."""
     while True:
@@ -366,37 +343,31 @@ def serverThread(client_sock):
             del data
 
 
+def controllingThread(sock):
+    """Starts up new client sockets as needed"""
+    while True:
+        try:
+            # Wait until someone tries to connect to us.
+            client_sock, sockname = sock.accept()
+            # 13s of ping + up to 60s of HTTP(S) timeouts = 73 + 2 for transport overhead
+            client_sock.settimeout(75.0)
+            worker = threading.Thread(target=serverThread, args=(client_sock,))
+            worker.daemon = True
+            worker.start()
+            workerLock.acquire()
+            workerQueue.appendleft(worker)
+            workerLock.release()
+            del worker
+            del client_sock
+            del sockname
+        except Exception as ex:
+            logger("Unable to accept connection: %s" % str(ex))
+            sleep(1)
+            continue
+
+
 class myQueue(object):
     """This is the main TCP Queue class."""
-
-    def __str__(self):
-        """This routine will be called with a str(Class) call and will return
-        an str representation of all the variables defined within the class.
-        The data is returned as a list of lists. The first element is the
-        variable name, the second is the value. The variables are alphabetized.
-        [['varname', 'value'], ['varname2', 'value2'] [...]]"""
-        from inspect import getmembers, isroutine
-
-        myDict = dict()
-        for name, obj in getmembers(self):
-            # Variables that start with __ are "private" so shouldn't be displayed.
-            # We don't want to display the names of the functions in the output.
-            if not isroutine(obj) and not name.startswith("__"):
-                myDict[name] = obj
-        retval = []
-        # Why are we sorting? So the results are always returned in the same order.
-        # Dicts can return data in any order, so we sort.
-        for i in sorted(myDict.keys()):
-            retval.append([i, myDict[i]])
-        myDict.clear()
-        del myDict
-        if "name" in locals():
-            del name
-        if "obj" in locals():
-            del obj
-        if "i" in locals():
-            del i
-        return str(retval)
 
     def __init__(self, host="127.0.0.1", port=49152):
         """Initializes the queueing system but does not start the queues.
@@ -720,3 +691,32 @@ class myQueue(object):
         """Returns the number of elements in the Producer queue.
         This function will only work on the server, not on the clients."""
         return len(producerQueue)
+
+    def __str__(self):
+        """This routine will be called with a str(Class) call and will return
+        an str representation of all the variables defined within the class.
+        The data is returned as a list of lists. The first element is the
+        variable name, the second is the value. The variables are alphabetized.
+        [['varname', 'value'], ['varname2', 'value2'] [...]]"""
+        from inspect import getmembers, isroutine
+
+        myDict = dict()
+        for name, obj in getmembers(self):
+            # Variables that start with __ are "private" so shouldn't be displayed.
+            # We don't want to display the names of the functions in the output.
+            if not isroutine(obj) and not name.startswith("__"):
+                myDict[name] = obj
+        retval = []
+        # Why are we sorting? So the results are always returned in the same order.
+        # Dicts can return data in any order, so we sort.
+        for i in sorted(myDict.keys()):
+            retval.append([i, myDict[i]])
+        myDict.clear()
+        del myDict
+        if "name" in locals():
+            del name
+        if "obj" in locals():
+            del obj
+        if "i" in locals():
+            del i
+        return str(retval)

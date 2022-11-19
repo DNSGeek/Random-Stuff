@@ -82,28 +82,6 @@ def sigint_handler(a, b):
     sysexit(0)
 
 
-class HB_Tests(unittest.TestCase):
-    def setUp(self):
-        global myState
-        global palive
-        myState = "P"
-        palive = True
-        self.ssock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.ssock.settimeout(
-            6.0
-        )  # Abort recvfrom after 6 seconds and start again.
-        self.ssock.bind(("127.0.0.1", 53281))
-        return
-
-    def tearDown(self):
-        self.ssock.close()
-        return
-
-    def test_process(self):
-        self.assertTrue(checkForServer("heartbeat.py", ("127.0.0.1", 53281)))
-        return
-
-
 def checkForServer(processname: str, caddr: Tuple) -> bool:
     logging.debug("Entering checkForServer")
     assert isinstance(processname, str)
@@ -168,6 +146,28 @@ def checkForServer(processname: str, caddr: Tuple) -> bool:
         palive = True
     del srvcnt
     return True
+
+
+class HB_Tests(unittest.TestCase):
+    def setUp(self):
+        global myState
+        global palive
+        myState = "P"
+        palive = True
+        self.ssock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.ssock.settimeout(
+            6.0
+        )  # Abort recvfrom after 6 seconds and start again.
+        self.ssock.bind(("127.0.0.1", 53281))
+        return
+
+    def tearDown(self):
+        self.ssock.close()
+        return
+
+    def test_process(self):
+        self.assertTrue(checkForServer("heartbeat.py", ("127.0.0.1", 53281)))
+        return
 
 
 def pingPong(processname: str, caddr: Tuple):
