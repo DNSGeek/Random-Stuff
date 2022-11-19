@@ -1,8 +1,8 @@
+import errno
 import logging
+import os
 import signal
 import time
-import os
-import errno
 from functools import wraps
 
 if "DEBUG" not in globals():

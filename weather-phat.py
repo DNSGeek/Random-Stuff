@@ -7,6 +7,7 @@ import os
 import pickle
 import signal
 import time
+
 from daemonize import Daemonize
 from fonts.ttf import FredokaOne
 from inky import InkyPHAT
@@ -210,7 +211,9 @@ def main():
             draw.text(
                 (72, 34),
                 temp,
-                inky_display.WHITE if temperature < WARNING_TEMP else inky_display.RED,
+                inky_display.WHITE
+                if temperature < WARNING_TEMP
+                else inky_display.RED,
                 font=font,
             )
 
@@ -225,7 +228,10 @@ def main():
             logger(f"Wind is {windSpeed} MPH {windDir}")
 
             draw.text(
-                (72, 58), f"{windSpeed} {windDir}", inky_display.WHITE, font=font
+                (72, 58),
+                f"{windSpeed} {windDir}",
+                inky_display.WHITE,
+                font=font,
             )
 
             # Draw the current weather icon over the backdrop
@@ -314,6 +320,9 @@ if __name__ == "__main__":
         main()
 
     daemon = Daemonize(
-        app="weather-phat.py", pid="/tmp/weather.pid", action=main, foreground=False
+        app="weather-phat.py",
+        pid="/tmp/weather.pid",
+        action=main,
+        foreground=False,
     )
     daemon.start()

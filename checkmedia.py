@@ -1,14 +1,14 @@
 #!/usr/bin/python -uROO
 
-import sqlite3
-from sys import argv, exit
-import os
 import fnmatch
 import hashlib
-import time
-import threading
-import queue
 import multiprocessing
+import os
+import queue
+import sqlite3
+import threading
+import time
+from sys import argv, exit
 
 tlock = threading.Lock()
 tqueue = queue.Queue()

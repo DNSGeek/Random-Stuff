@@ -3,7 +3,6 @@
 import argparse
 from random import randint, seed
 
-
 retlist = [
     "the",
     "of",

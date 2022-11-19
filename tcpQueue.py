@@ -97,17 +97,16 @@ if __name__ == ‘__main__’:
         del(result)
 """
 
-import threading
-import socket
-import zlib
-
 import pickle
+import socket
+import threading
+import zlib
+from collections import deque
 from platform import node
-from time import sleep
 from random import random
 from string import lower
-from collections import deque
 from sys import exit
+from time import sleep
 
 try:
     from nmSys import sendAlert
@@ -445,7 +444,9 @@ class myQueue(object):
                 try:
                     eval("self.%s.clear()" % name)
                 except Exception as ex:
-                    print("Unable to clear dictionary %s: %s" % (name, str(ex)))
+                    print(
+                        "Unable to clear dictionary %s: %s" % (name, str(ex))
+                    )
             if type(obj) is list:
                 try:
                     eval("self.%s[:] = []" % name)

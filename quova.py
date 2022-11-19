@@ -3,12 +3,14 @@
 # Change the interpreter above to your Python interpreter.
 
 import socket
-import time
 import syslog
+import time
+
 # from multiprocessing import Process as Worker
 from threading import Thread as Worker
-import pygeoip  # https://github.com/appliedsec/pygeoip
+
 import daemon  # http://pypi.python.org/pypi/python-daemon/
+import pygeoip  # https://github.com/appliedsec/pygeoip
 
 WORKER_MAX = 256  # How many threads/processes to have.
 DEAD_TIME = 1  # How long in seconds to wait for dead thread removal.
