@@ -57,9 +57,7 @@ def decode_quova(data):
         octets = "%d.%d.%d.%d" % (IP[0], IP[1], IP[2], IP[3])
         return octets
     except Exception as ex:
-        syslog.syslog(
-            "Unable to decode passed in IP %s: %s" % (str(data), str(ex))
-        )
+        syslog.syslog("Unable to decode passed in IP %s: %s" % (str(data), str(ex)))
         return DEFAULT_IP
 
 
@@ -197,8 +195,7 @@ def process_connection(client_sock):
                 syslog.syslog("Unable to close socket 4: %s" % str(ex))
             finally:
                 syslog.syslog(
-                    "Unable to send GeoIP response for IP %s: %s"
-                    % (str(IP), str(ex))
+                    "Unable to send GeoIP response for IP %s: %s" % (str(IP), str(ex))
                 )
                 return
     return
