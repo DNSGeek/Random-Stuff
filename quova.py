@@ -20,7 +20,7 @@ HOST = ""  # Empty is all interfaces, otherwise specify an IP to listen on
 PORT = 12345  # What TCP port to listen to for new connections.
 
 # The MaxMind GeoLiteCity database full path and filename
-# http://geolite.maxmind.com/download/geoip/database/GeoLiteCity.dat.gz
+# https://www.miyuru.lk/geoiplegacy
 # Updated the first Tuesday of each month.
 GEOIPDB = "/root/geolocate/GeoLiteCity.dat"
 
