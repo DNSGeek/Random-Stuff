@@ -43,7 +43,10 @@ class Player:
         self.ybottom = self.ypos + self.height
 
     def collision(self, bally):
+        ballybot = bally + 20
         if bally >= self.ypos and bally <= self.ybottom:
+            return True
+        if ballybot >= self.ypos and ballybot <= self.ybottom:
             return True
         return False
 
