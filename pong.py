@@ -83,9 +83,9 @@ class Player:
 
 def getBacklightLevel(l) -> float:
     # Keep the display dim to save battery
-    reading = float(l.read_u16())
+    reading: float = float(l.read_u16())
     # Values seem to be between 0.0 - 25000.0
-    bl = (reading / 25000.0) + 0.1
+    bl: float = (reading / 25000.0) + 0.1
     # Lower than 0.4 seems to turn off the backlight
     if bl < 0.4:
         bl = 0.4
@@ -212,16 +212,17 @@ display.set_font("bitmap8")
 lux_pwr = Pin(27, Pin.OUT)
 lux_pwr.value(1)
 lux = ADC(26)
-p1 = Player(0)
-p2 = Player(300)
-lorr = True if random.random() <= 0.5 else False
-uord = True if random.random() <= 0.5 else False
-x = 160
-y = 100
+p1: Player = Player(0)
+p2: Player = Player(300)
+lorr: bool = True if random.random() <= 0.5 else False
+uord: bool = True if random.random() <= 0.5 else False
+x: int = 160
+y: int = 100
+# [red, orange, yellow, green. blue, indigo, violet]
 c = [224, 236, 252, 28, 3, 102, 66]
-index = 0
-count = 0
-high = 15
+index: int = 0
+count: int = 0
+high: int = 15
 while True:
     clearScreen()
     displayScore(p1.getScore(), p2.getScore())
