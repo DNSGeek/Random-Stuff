@@ -1,56 +1,66 @@
 import random
 import time
 
+import qrcode
 from machine import ADC, Pin
 from picographics import DISPLAY_TUFTY_2040, PicoGraphics
-
-display = PicoGraphics(display=DISPLAY_TUFTY_2040)
+from pimoroni import Button
 
 # Change your First and Last name in the function
 # displayScore and fix the position to make them centered.
 
 
+display: PicoGraphics = PicoGraphics(display=DISPLAY_TUFTY_2040)
+WIDTH, HEIGHT = display.get_bounds()
+button_a: Button = Button(7, invert=False)
+button_b: Button = Button(8, invert=False)
+button_c: Button = Button(9, invert=False)
+button_up: Button = Button(22, invert=False)
+button_down: Button = Button(6, invert=False)
+qrtext: str = "https://github.com/DNSGeek/Random-Stuff/blob/master/pong.py"
+
+
 class Player:
-    def __init__(self, x):
-        self.xpos = x
+    def __init__(self, x: int) -> None:
+        self.xpos: int = x
+        self.ypos: int = 130
+        self.height: int = 50
+        self.up: bool = True if random.random() <= 0.5 else False
+        self.count: int = 0
+        self.score: int = 0
+        self.ybottom: int = self.ypos + self.height
+        self.smooth: int = 15
+
+    def reset(self) -> None:
         self.ypos = 130
-        self.height = 50
         self.up = True if random.random() <= 0.5 else False
         self.count = 0
         self.score = 0
         self.ybottom = self.ypos + self.height
-        self.smooth = 15
 
-    def reset(self):
-        self.ypos = 130
-        self.up = True if random.random() <= 0.5 else False
-        self.count = 0
-        self.score = 0
-        self.ybottom = self.ypos + self.height
-
-    def moveUp(self):
+    def moveUp(self) -> None:
         if self.ypos > 92:
             self.ypos -= 1
         else:
             self.up = False
         self.ybottom = self.ypos + self.height
 
-    def moveDown(self):
+    def moveDown(self) -> None:
         if self.ypos < 190:
             self.ypos += 1
         else:
             self.up = True
         self.ybottom = self.ypos + self.height
 
-    def collision(self, bally):
-        ballybot = bally + 20
+    def collision(self, bally: int) -> bool:
+        ballybot: int = bally + 20
         if bally >= self.ypos and bally <= self.ybottom:
             return True
         if ballybot >= self.ypos and ballybot <= self.ybottom:
             return True
         return False
 
-    def move(self):
+    def move(self) -> None:
         if self.count < self.smooth:
             self.count += 1
             if self.up:
@@ -61,21 +71,21 @@ class Player:
         self.count = 0
         self.up = True if random.random() <= 0.5 else False
 
-    def addScore(self):
+    def addScore(self) -> None:
         self.score += 1
 
-    def getScore(self):
+    def getScore(self) -> int:
         return self.score
 
-    def getPosition(self):
+    def getPosition(self) -> int:
         return self.ypos
 
 
-def getBacklightLevel(l):
+def getBacklightLevel(l) -> float:
     # Keep the display dim to save battery
     reading = float(l.read_u16())
     # Values seem to be between 0.0 - 25000.0
-    bl = reading / 25000.0
+    bl = (reading / 25000.0) + 0.1
     # Lower than 0.4 seems to turn off the backlight
     if bl < 0.4:
         bl = 0.4
@@ -84,34 +94,34 @@ def getBacklightLevel(l):
     return bl
 
 
-def clearScreen():
+def clearScreen() -> None:
     global display
     display.set_pen(0)
     display.clear()
 
 
-def displayScore(p1s, p2s):
+def displayScore(p1s: int, p2s: int) -> None:
     global display
     display.set_pen(255)
     display.text(f"{p1s}", 0, 0, scale=4)
     display.set_pen(28)
-    # Change the 70 to fix the positioning
-    display.text("First", 70, 0, scale=5)
-    # Change the 100 to fix the positioning
-    display.text("Last", 100, 40, scale=5)
+    display.text("FIRSTNAME", 70, 0, scale=5)
+    display.text("LASTNAME", 100, 40, scale=5)
     display.set_pen(255)
     display.text(f"{p2s}", 280, 0, scale=4)
     display.line(0, 90, 320, 90)
 
 
-def displayPlayers(p1h, p2h):
+def displayPlayers(p1h: int, p2h: int) -> None:
     global display
     display.set_pen(224)
     display.rectangle(0, p1h, 20, 50)
     display.rectangle(300, p2h, 20, 50)
 
 
-def moveBall(x, y, l, u, p1s, p2s):
+def moveBall(
+    x: int, y: int, l: bool, u: bool, p1s: Player, p2s: Player
+) -> (int, int, bool, bool):
     if l is False:
         # We're moving right
         if x > 280:
@@ -148,13 +158,13 @@ def moveBall(x, y, l, u, p1s, p2s):
     return x, y, l, u
 
 
-def displayBall(x, y, color):
+def displayBall(x: int, y: int, color: int) -> None:
     global display
     display.set_pen(color)
     display.rectangle(x, y, 20, 20)
 
 
-def detectCollision(x, y, p1c, p2c, l):
+def detectCollision(x: int, y: int, p1c: Player, p2c: Player, l: bool) -> bool:
     if x == 20:
         if p1c.collision(y):
             l = not l
@@ -162,6 +172,34 @@ def detectCollision(x, y, p1c, p2c, l):
         if p2c.collision(y):
             l = not l
     return l
+
+
+def showQRCode() -> None:
+    global qrtext
+    global display
+    global WIDTH
+    global HEIGHT
+    clearScreen()
+    code = qrcode.QRCode()
+    code.set_text(qrtext)
+    xs, ys = code.get_size()
+    x_size: int = WIDTH // xs
+    y_size: int = HEIGHT // ys
+    pixel_size: int = min(x_size, y_size)
+    offset_x: int = (WIDTH // 2) - ((xs * pixel_size) // 2)
+    offset_y: int = (HEIGHT // 2) - ((ys * pixel_size) // 2)
+    display.set_pen(255)
+    display.rectangle(0, 0, WIDTH, HEIGHT)
+    for x in range(xs - 1):
+        for y in range(ys - 1):
+            borw: bool = code.get_module(x, y)
+            xp: int = x * pixel_size
+            yp: int = y * pixel_size
+            display.set_pen(255 if borw else 0)
+            display.rectangle(
+                xp + offset_x, yp + offset_y, pixel_size - 1, pixel_size - 1
+            )
+    display.update()
 
 
 # Do the basic initialization
@@ -209,3 +247,12 @@ while True:
         x = 160
         y = 100
     display.update()
+    if (
+        button_a.is_pressed
+        or button_b.is_pressed
+        or button_c.is_pressed
+        or button_up.is_pressed
+        or button_down.is_pressed
+    ):
+        showQRCode()
+        time.sleep(10)
