@@ -174,7 +174,7 @@ def detectCollision(x: int, y: int, p1c: Player, p2c: Player, l: bool) -> bool:
     return l
 
 
-def showQRCode() -> None:
+def showQRCode(l) -> None:
     global qrtext
     global display
     global WIDTH
@@ -202,7 +202,7 @@ def showQRCode() -> None:
     display.set_backlight(1.0)
     display.update()
     time.sleep(10)
-    display.set_backlight(getBacklightLevel(lux))
+    display.set_backlight(getBacklightLevel(l))
 
 
 # Do the basic initialization
@@ -257,4 +257,4 @@ while True:
         or button_up.is_pressed
         or button_down.is_pressed
     ):
-        showQRCode()
+        showQRCode(lux)
