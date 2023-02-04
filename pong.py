@@ -199,6 +199,7 @@ def showQRCode() -> None:
             display.rectangle(
                 xp + offset_x, yp + offset_y, pixel_size - 1, pixel_size - 1
             )
+    display.set_backlight(1.0)
     display.update()
 
 
@@ -256,3 +257,4 @@ while True:
     ):
         showQRCode()
         time.sleep(10)
+        display.set_backlight(getBacklightLevel(lux))
