@@ -201,6 +201,8 @@ def showQRCode() -> None:
             )
     display.set_backlight(1.0)
     display.update()
+    time.sleep(10)
+    display.set_backlight(getBacklightLevel(lux))
 
 
 # Do the basic initialization
@@ -256,5 +258,3 @@ while True:
         or button_down.is_pressed
     ):
         showQRCode()
-        time.sleep(10)
-        display.set_backlight(getBacklightLevel(lux))
