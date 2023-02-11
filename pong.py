@@ -6,10 +6,6 @@ from machine import ADC, Pin
 from picographics import DISPLAY_TUFTY_2040, PicoGraphics
 from pimoroni import Button
 
-# Change your First and Last name in the function
-# displayScore and fix the position to make them centered.
-
-
 display: PicoGraphics = PicoGraphics(display=DISPLAY_TUFTY_2040)
 WIDTH, HEIGHT = display.get_bounds()
 button_a: Button = Button(7, invert=False)
@@ -18,6 +14,10 @@ button_c: Button = Button(9, invert=False)
 button_up: Button = Button(22, invert=False)
 button_down: Button = Button(6, invert=False)
 qrtext: str = "https://github.com/DNSGeek/Random-Stuff/blob/master/pong.py"
+
+# Set your names here. They will be autoscaled and centered
+firstname: str = "FIRSTNAME"
+lastname: str = "LASTNAME"
 
 
 class Player:
@@ -100,13 +100,36 @@ def clearScreen() -> None:
     display.clear()
 
 
+def computeNameSize() -> int:
+    global firstname
+    global lastname
+    maxwidth: int = 240
+    namesize: int = 5
+    fnamewidth: int = display.measure_text(firstname, namesize)
+    lnamewidth: int = display.measure_text(lastname, namesize)
+    namewidth: int = max(fnamewidth, lnamewidth)
+    while namewidth > maxwidth:
+        namesize -= 1
+        fnamewidth = display.measure_text(firstname, namesize)
+        lnamewidth = display.measure_text(lastname, namesize)
+        namewidth = max(fnamewidth, lnamewidth)
+    return namesize
+
+
 def displayScore(p1s: int, p2s: int) -> None:
     global display
+    global firstname
+    global lastname
+    global namesize
+    fnamewidth: int = display.measure_text(firstname, namesize)
+    lnamewidth: int = display.measure_text(lastname, namesize)
+    fnoffset = ((240 - fnamewidth) // 2) + 40
+    lnoffset = ((240 - lnamewidth) // 2) + 40
     display.set_pen(255)
     display.text(f"{p1s}", 0, 0, scale=4)
     display.set_pen(28)
-    display.text("FIRSTNAME", 70, 0, scale=5)
-    display.text("LASTNAME", 100, 40, scale=5)
+    display.text(firstname, fnoffset, 0, scale=namesize)
+    display.text(lastname, lnoffset, 40, scale=namesize)
     display.set_pen(255)
     display.text(f"{p2s}", 280, 0, scale=4)
     display.line(0, 90, 320, 90)
@@ -164,7 +187,9 @@ def displayBall(x: int, y: int, color: int) -> None:
     display.rectangle(x, y, 20, 20)
 
 
-def detectCollision(x: int, y: int, p1c: Player, p2c: Player, l: bool) -> bool:
+def detectCollision(
+    x: int, y: int, p1c: Player, p2c: Player, l: bool
+) -> bool:
     if x == 20:
         if p1c.collision(y):
             l = not l
@@ -197,7 +222,7 @@ def showQRCode(l) -> None:
             yp: int = y * pixel_size
             display.set_pen(255 if borw else 0)
             display.rectangle(
-                xp + offset_x, yp + offset_y, pixel_size - 1, pixel_size - 1
+                xp + offset_x, yp + offset_y, pixel_size, pixel_size
             )
     display.set_backlight(1.0)
     display.update()
@@ -209,6 +234,7 @@ def showQRCode(l) -> None:
 random.seed()
 display.set_backlight(0.5)
 display.set_font("bitmap8")
+namesize: int = computeNameSize()
 lux_pwr = Pin(27, Pin.OUT)
 lux_pwr.value(1)
 lux = ADC(26)
