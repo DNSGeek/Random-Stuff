@@ -440,20 +440,20 @@ void GenerateIncome( player * Me )
 
     switch( Me -> Justice )
     {
-        case 1:
-            strcpy( string, "Very Fair" );
-            break;
+    case 1:
+        strcpy( string, "Very Fair" );
+        break;
 
-        case 2:
-            strcpy( string, "Moderate" );
-            break;
+    case 2:
+        strcpy( string, "Moderate" );
+        break;
 
-        case 3:
-            strcpy( string, "Harsh" );
-            break;
+    case 3:
+        strcpy( string, "Harsh" );
+        break;
 
-        case 4:
-            strcpy( string, "Outrageous" );
+    case 4:
+        strcpy( string, "Outrageous" );
     }
 
     y = 150.0 - ( float ) Me -> SalesTax - ( float ) Me -> CustomsDuty -
@@ -561,26 +561,26 @@ void PrintGrain( player * Me )
 {
     switch( Me -> Harvest )
     {
-        case 0:
-        case 1:
-            printf( "Drought. Famine Threatens. " );
-            break;
+    case 0:
+    case 1:
+        printf( "Drought. Famine Threatens. " );
+        break;
 
-        case 2:
-            printf( "Bad Weather. Poor Harvest. " );
-            break;
+    case 2:
+        printf( "Bad Weather. Poor Harvest. " );
+        break;
 
-        case 3:
-            printf( "Normal Weather. Average Harvest. " );
-            break;
+    case 3:
+        printf( "Normal Weather. Average Harvest. " );
+        break;
 
-        case 4:
-            printf( "Good Weather. Fine Harvest. " );
-            break;
+    case 4:
+        printf( "Good Weather. Fine Harvest. " );
+        break;
 
-        case 5:
-            printf( "Excellent Weather. Great Harvest! " );
-            break;
+    case 5:
+        printf( "Excellent Weather. Great Harvest! " );
+        break;
     }
 
     return;
@@ -998,54 +998,54 @@ void AdjustTax( player * Me )
 
         switch( val )
         {
-            case 1:
-                printf( "New customs duty (0 to 100): " );
-                fgets( string, 255, stdin );
-                duty = ( int ) atoi( string );
+        case 1:
+            printf( "New customs duty (0 to 100): " );
+            fgets( string, 255, stdin );
+            duty = ( int ) atoi( string );
 
-                if( duty > 100 ) duty = 100;
+            if( duty > 100 ) duty = 100;
 
-                if( duty < 0 ) duty = 0;
+            if( duty < 0 ) duty = 0;
 
-                Me -> CustomsDuty = duty;
-                break;
+            Me -> CustomsDuty = duty;
+            break;
 
-            case 2:
-                printf( "New sales tax (0 to 50): " );
-                fgets( string, 255, stdin );
-                duty = ( int ) atoi( string );
+        case 2:
+            printf( "New sales tax (0 to 50): " );
+            fgets( string, 255, stdin );
+            duty = ( int ) atoi( string );
 
-                if( duty > 50 ) duty = 50;
+            if( duty > 50 ) duty = 50;
 
-                if( duty < 0 ) duty = 0;
+            if( duty < 0 ) duty = 0;
 
-                Me -> SalesTax = duty;
-                break;
+            Me -> SalesTax = duty;
+            break;
 
-            case 3:
-                printf( "New wealth tax (0 to 25): " );
-                fgets( string, 255, stdin );
-                duty = ( int ) atoi( string );
+        case 3:
+            printf( "New wealth tax (0 to 25): " );
+            fgets( string, 255, stdin );
+            duty = ( int ) atoi( string );
 
-                if( duty > 25 ) duty = 25;
+            if( duty > 25 ) duty = 25;
 
-                if( duty < 0 ) duty = 0;
+            if( duty < 0 ) duty = 0;
 
-                Me -> IncomeTax = duty;
-                break;
+            Me -> IncomeTax = duty;
+            break;
 
-            case 4:
-                printf( "Justice: 1. Very fair, 2. Moderate" );
-                printf( " 3. Harsh, 4. Outrageous: " );
-                fgets( string, 255, stdin );
-                duty = ( int ) atoi( string );
+        case 4:
+            printf( "Justice: 1. Very fair, 2. Moderate" );
+            printf( " 3. Harsh, 4. Outrageous: " );
+            fgets( string, 255, stdin );
+            duty = ( int ) atoi( string );
 
-                if( duty > 4 ) duty = 4;
+            if( duty > 4 ) duty = 4;
 
-                if( duty < 1 ) duty = 1;
+            if( duty < 1 ) duty = 1;
 
-                Me -> Justice = duty;
-                break;
+            Me -> Justice = duty;
+            break;
         }
 
     }
@@ -1088,28 +1088,28 @@ void StatePurchases( player * Me, int HowMany, player MyPlayers[6] )
 
         switch( val )
         {
-            case 1:
-                BuyMarket( Me );
-                break;
+        case 1:
+            BuyMarket( Me );
+            break;
 
-            case 2:
-                BuyMill( Me );
-                break;
+        case 2:
+            BuyMill( Me );
+            break;
 
-            case 3:
-                BuyPalace( Me );
-                break;
+        case 3:
+            BuyPalace( Me );
+            break;
 
-            case 4:
-                BuyCathedral( Me );
-                break;
+        case 4:
+            BuyCathedral( Me );
+            break;
 
-            case 5:
-                BuySoldiers( Me );
-                break;
+        case 5:
+            BuySoldiers( Me );
+            break;
 
-            case 6:
-                ShowStats( MyPlayers, HowMany );
+        case 6:
+            ShowStats( MyPlayers, HowMany );
         }
     }
 
@@ -1151,29 +1151,29 @@ void ImDead( player * Me )
 
         switch( why )
         {
-            case 0:
-            case 1:
-            case 2:
-            case 3:
-                printf( "of pneumonia after a cold winter in a drafty castle.\n" );
-                break;
+        case 0:
+        case 1:
+        case 2:
+        case 3:
+            printf( "of pneumonia after a cold winter in a drafty castle.\n" );
+            break;
 
-            case 4:
-                printf( "of typhoid after drinking contaminated water.\n" );
-                break;
+        case 4:
+            printf( "of typhoid after drinking contaminated water.\n" );
+            break;
 
-            case 5:
-                printf( "in a smallpox epidemic.\n" );
-                break;
+        case 5:
+            printf( "in a smallpox epidemic.\n" );
+            break;
 
-            case 6:
-                printf( "after being attacked by robbers while travelling.\n" );
-                break;
+        case 6:
+            printf( "after being attacked by robbers while travelling.\n" );
+            break;
 
-            case 7:
-            case 8:
-                printf( "of food poisoning.\n" );
-                break;
+        case 7:
+        case 8:
+            printf( "of food poisoning.\n" );
+            break;
         }
     }
 
