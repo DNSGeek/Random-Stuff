@@ -1,0 +1,3 @@
+Create or copy your SSL key and cert and place them here
+
+Run makecert.sh to create a new, self-signed certificate good for 10 years.

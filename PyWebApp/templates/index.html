@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Welcome to my app{% endblock %}
+{% block content %}
+
+Here's some dynamic content: {{ message }}
+
+<br/> <br/>
+
+And here's a dynamic, filtered list:
+<ul>
+{% for item in somelist %}
+    {% if item != "cruel" %}
+        <li>{{ item }}</li>
+    {% endif %}
+{% endfor %}
+</ul>
+
+{% endblock %}
