@@ -284,4 +284,4 @@ while True:
         or button_up.is_pressed
         or button_down.is_pressed
     ):
-        showQRCode()
+        showQRCode(lux)
