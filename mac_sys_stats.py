@@ -4,6 +4,7 @@ import logging
 import subprocess
 import sys
 import time
+from platform import node
 from typing import Dict, List
 
 
@@ -28,7 +29,7 @@ def get_top() -> List[str]:
 
 def parse_top(top: List[str]) -> Dict:
     year = time.localtime().tm_year
-    retDict: Dict = {}
+    retDict: Dict = {"hostname": node()}
     for line in top:
         if not line:
             continue  # skip blank lines
@@ -65,9 +66,9 @@ def parse_top(top: List[str]) -> Dict:
                 "idle": idlepct,
             }
         elif line.startswith("SharedLibs"):
-            resident = int(fields[1][:-1])
-            data = int(fields[3][:-1])
-            linked = int(fields[5][:-1])
+            resident = fields[1]
+            data = fields[3]
+            linked = fields[5]
             retDict["libs"] = {
                 "resident": resident,
                 "data": data,
@@ -75,9 +76,9 @@ def parse_top(top: List[str]) -> Dict:
             }
         elif line.startswith("MemRegions"):
             total = int(fields[1])
-            resident = int(fields[3][:-1])
-            private = int(fields[5][:-1])
-            shared = int(fields[7][:-1])
+            resident = fields[3]
+            private = fields[5]
+            shared = fields[7]
             retDict["regions"] = {
                 "total": total,
                 "resident": resident,
@@ -85,10 +86,10 @@ def parse_top(top: List[str]) -> Dict:
                 "shared": shared,
             }
         elif line.startswith("PhysMem"):
-            used = int(fields[1][:-1])
-            wired = int(fields[3][1:-1])
-            comp = int(fields[5][:-1])
-            unused = int(fields[7][:-1])
+            used = fields[1]
+            wired = fields[3]
+            comp = fields[5]
+            unused = fields[7]
             retDict["memory"] = {
                 "used": used,
                 "wired": wired,
@@ -96,13 +97,13 @@ def parse_top(top: List[str]) -> Dict:
                 "unused": unused,
             }
         elif line.startswith("VM"):
-            vsize = int(fields[1][:-1])
-            frame = int(fields[3][:-1])
-            swapin = int(fields[6].split("(")[0])
-            swapout = int(fields[8].split("(")[0])
+            vsize = fields[1]
+            frame = fields[3]
+            swapin = fields[6].split("(")[0]
+            swapout = fields[8].split("(")[0]
             retDict["vm"] = {
                 "vsize": vsize,
-                "framwork_vsize": frame,
+                "framework_vsize": frame,
                 "swapin": swapin,
                 "swapout": swapout,
             }
@@ -110,27 +111,27 @@ def parse_top(top: List[str]) -> Dict:
             pin = fields[2].split("/")
             pout = fields[4].split("/")
             pktin = int(pin[0])
-            memin = int(pin[1][:-1])
+            memin = pin[1]
             pktout = int(pout[0])
-            memout = int(pout[1][:-1])
+            memout = pout[1]
             retDict["network"] = {
                 "packets_in": pktin,
-                "mb_in": memin,
+                "data_in": memin,
                 "packets_out": pktout,
-                "mb_out": memout,
+                "data_out": memout,
             }
         elif line.startswith("Disks"):
             r = fields[1].split("/")
             w = fields[3].split("/")
             pktsin = int(r[0])
-            memin = int(r[1][:-1])
+            memin = r[1]
             pktsout = int(w[0])
-            memout = int(w[1][:-1])
+            memout = w[1]
             retDict["disk_usage"] = {
                 "sectors_read": pktsin,
-                "memory_read": memin,
+                "data_read": memin,
                 "sectors_written": pktsout,
-                "memory_written": memout,
+                "data_written": memout,
             }
         elif line.startswith("PID"):
             out_fields: Dict[str, int] = {}
