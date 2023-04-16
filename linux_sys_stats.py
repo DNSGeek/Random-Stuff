@@ -32,9 +32,9 @@ def parse_top(top: List[str]) -> Dict:
             continue  # skip blank lines
         fields = line.split()
         if line.startswith("top - "):
-            one = float(fields[12][:-1])
-            five = float(fields[13][:-1])
-            fifteen = float(fields[14])
+            one = float(fields[-3][:-1])
+            five = float(fields[-2][:-1])
+            fifteen = float(fields[-1])
             retDict["load_avg"] = {
                 "one": one,
                 "five": five,
