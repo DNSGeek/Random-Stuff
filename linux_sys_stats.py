@@ -10,7 +10,7 @@ from typing import Dict, List
 def get_top() -> List[str]:
     try:
         top = subprocess.Popen(
-            ["/usr/bin/top", "-b", "-n", "1"],
+            ["/usr/bin/top", "-b", "-n", "1", "-w", "240"],
             stdout=subprocess.PIPE,
             stdin=subprocess.PIPE,
             stderr=subprocess.PIPE,
