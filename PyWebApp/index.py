@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from functools import wraps
 from typing import Dict
 
@@ -15,6 +16,10 @@ from cookieMonster import eatCookie, makeCookie
 myApp: str = "myapp"
 # What port will we listen on?
 PORT: int = 8080
+# Set this to the number of seconds before the cookie data
+# times out and needs to be renewed. Could be used for an
+# auto-logout, for example.
+TIMEOUT: int = 900
 # Where are the templates?
 TEMPLATE_DIR: str = f"{os.getcwd()}/templates"
 # Wanna run ing debug mode?
@@ -36,7 +41,15 @@ def cookie_work(func):
         # Decode the cookie
         myCookie = eatCookie(cookie)
 
-        # Make any cookie changes here, if needed
+        # Update the current time for timeout purposes
+        if isinstance(myCookie, dict):
+            now: int = int(time.localtime())
+            if "__cookieTime__" in myCookie:
+                cookie_time: int = myCookie["__cookieTime__"]
+                if now - cookie_time > TIMEOUT:
+                    myCookie["__cookieTime__"] = 0
+                else:
+                    myCookie["__cookieTime__"] = now
 
         # Make the new cookie to return to the client
         encCookie = makeCookie(myCookie)
@@ -66,6 +79,9 @@ class Root:
     @cherrypy.tools.gzip()
     # Every function besides index will get cookie_work called automagically
     def index(self):
+        # Initialize the cookie
+        encCookie = makeCookie({"my": "data"})
+        cherrypy.response.cookie[myApp] = encCookie
         return render(
             "index.html",
             {"message": "Moo", "somelist": ["r", "f", 1, "a", "cruel"]},
