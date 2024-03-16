@@ -13,9 +13,11 @@ button_b: Button = Button(8, invert=False)
 button_c: Button = Button(9, invert=False)
 button_up: Button = Button(22, invert=False)
 button_down: Button = Button(6, invert=False)
+
+# Set this to whatever text you want the QR code to be.
 qrtext: str = "https://github.com/DNSGeek/Random-Stuff/blob/master/pong.py"
 
-# Set your names here. They will be autoscaled and centered
+# Set your names here. It will be autoscaled and centered
 firstname: str = "FIRSTNAME"
 lastname: str = "LASTNAME"
 
@@ -25,31 +27,22 @@ class Player:
         self.xpos: int = x
         self.ypos: int = 130
         self.height: int = 50
-        self.up: bool = True if random.random() <= 0.5 else False
-        self.count: int = 0
         self.score: int = 0
         self.ybottom: int = self.ypos + self.height
-        self.smooth: int = 15
 
     def reset(self) -> None:
         self.ypos = 130
-        self.up = True if random.random() <= 0.5 else False
-        self.count = 0
         self.score = 0
         self.ybottom = self.ypos + self.height
 
     def moveUp(self) -> None:
         if self.ypos > 92:
             self.ypos -= 1
-        else:
-            self.up = False
         self.ybottom = self.ypos + self.height
 
     def moveDown(self) -> None:
         if self.ypos < 190:
             self.ypos += 1
-        else:
-            self.up = True
         self.ybottom = self.ypos + self.height
 
     def collision(self, bally: int) -> bool:
@@ -60,16 +53,20 @@ class Player:
             return True
         return False
 
-    def move(self) -> None:
-        if self.count < self.smooth:
-            self.count += 1
-            if self.up:
-                self.moveUp()
-            else:
-                self.moveDown()
-            return
-        self.count = 0
-        self.up = True if random.random() <= 0.5 else False
+    def move(self, lorr: bool, bally: int) -> None:
+        if (self.xpos < 100 and lorr) or (self.xpos > 100 and not lorr):
+            ballybot: int = bally + 20
+            if self.ybottom < bally:
+                # Check if we're being silly
+                if random.random() > 0.8:
+                    self.moveUp()
+                else:
+                    self.moveDown()
+            if self.ypos > ballybot:
+                if random.random() > 0.8:
+                    self.moveDown()
+                else:
+                    self.moveUp()
 
     def addScore(self) -> None:
         self.score += 1
@@ -114,6 +111,9 @@ def computeNameSize() -> int:
         lnamewidth = display.measure_text(lastname, namesize)
         namewidth = max(fnamewidth, lnamewidth)
     return namesize
+
+
+namesize: int = computeNameSize()
 
 
 def displayScore(p1s: int, p2s: int) -> None:
@@ -187,9 +187,7 @@ def displayBall(x: int, y: int, color: int) -> None:
     display.rectangle(x, y, 20, 20)
 
 
-def detectCollision(
-    x: int, y: int, p1c: Player, p2c: Player, l: bool
-) -> bool:
+def detectCollision(x: int, y: int, p1c: Player, p2c: Player, l: bool) -> bool:
     if x == 20:
         if p1c.collision(y):
             l = not l
@@ -221,9 +219,7 @@ def showQRCode(l) -> None:
             xp: int = x * pixel_size
             yp: int = y * pixel_size
             display.set_pen(255 if borw else 0)
-            display.rectangle(
-                xp + offset_x, yp + offset_y, pixel_size, pixel_size
-            )
+            display.rectangle(xp + offset_x, yp + offset_y, pixel_size, pixel_size)
     display.set_backlight(1.0)
     display.update()
     time.sleep(10)
@@ -234,7 +230,6 @@ def showQRCode(l) -> None:
 random.seed()
 display.set_backlight(0.5)
 display.set_font("bitmap8")
-namesize: int = computeNameSize()
 lux_pwr = Pin(27, Pin.OUT)
 lux_pwr.value(1)
 lux = ADC(26)
@@ -252,8 +247,8 @@ high: int = 15
 while True:
     clearScreen()
     displayScore(p1.getScore(), p2.getScore())
-    p1.move()
-    p2.move()
+    p1.move(lorr, y)
+    p2.move(lorr, y)
     x, y, lorr, uord = moveBall(x, y, lorr, uord, p1, p2)
     displayPlayers(p1.getPosition(), p2.getPosition())
     lorr = detectCollision(x, y, p1, p2, lorr)
