@@ -45,9 +45,9 @@ def Daemonize() -> int:
         if pid == 0:  # Are we the new child?
             os.umask(0)  # Clear any UMASK flags that were set.
         else:  # Exit the first child.
-            os._exit(0)
+            sysexit(0)
     else:  # Exit the parent.
-        os._exit(0)
+        sysexit(0)
 
     # Ask the OS how many open FDs there can be.
     maxfd = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
