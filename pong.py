@@ -58,12 +58,12 @@ class Player:
             ballybot: int = bally + 20
             if self.ybottom < bally:
                 # Check if we're being silly
-                if random.random() > 0.8:
+                if random.random() > 0.75:
                     self.moveUp()
                 else:
                     self.moveDown()
             if self.ypos > ballybot:
-                if random.random() > 0.8:
+                if random.random() > 0.75:
                     self.moveDown()
                 else:
                     self.moveUp()
