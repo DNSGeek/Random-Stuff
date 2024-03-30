@@ -1,8 +1,11 @@
+import gc
 import random
 import time
+from typing import List
 
 import qrcode
 from machine import ADC, Pin
+from micropython import const
 from picographics import DISPLAY_TUFTY_2040, PicoGraphics
 from pimoroni import Button
 
@@ -20,50 +23,51 @@ qrtext: str = "https://github.com/DNSGeek/Random-Stuff/blob/master/pong.py"
 # Set your names here. It will be autoscaled and centered
 firstname: str = "FIRSTNAME"
 lastname: str = "LASTNAME"
+namesize: int = 5
+pheight = const(50)
 
 
 class Player:
-    def __init__(self, x: int) -> None:
-        self.xpos: int = x
+    def __init__(self, xp: int) -> None:
+        self.xpos: int = xp
         self.ypos: int = 130
-        self.height: int = 50
         self.score: int = 0
-        self.ybottom: int = self.ypos + self.height
+        self.ybottom: int = self.ypos + pheight
 
     def reset(self) -> None:
         self.ypos = 130
         self.score = 0
-        self.ybottom = self.ypos + self.height
+        self.ybottom = self.ypos + pheight
 
     def moveUp(self) -> None:
         if self.ypos > 92:
             self.ypos -= 1
-        self.ybottom = self.ypos + self.height
+        self.ybottom = self.ypos + pheight
 
     def moveDown(self) -> None:
         if self.ypos < 190:
             self.ypos += 1
-        self.ybottom = self.ypos + self.height
+        self.ybottom = self.ypos + pheight
 
     def collision(self, bally: int) -> bool:
         ballybot: int = bally + 20
-        if bally >= self.ypos and bally <= self.ybottom:
+        if self.ypos <= bally <= self.ybottom:
             return True
-        if ballybot >= self.ypos and ballybot <= self.ybottom:
+        if self.ypos <= ballybot <= self.ybottom:
             return True
         return False
 
-    def move(self, lorr: bool, bally: int) -> None:
-        if (self.xpos < 100 and lorr) or (self.xpos > 100 and not lorr):
+    def move(self, lr: bool, bally: int) -> None:
+        if (self.xpos == 0 and lr) or (self.xpos == 300 and not lr):
             ballybot: int = bally + 20
+            silly: bool = random.random() > 0.85
             if self.ybottom < bally:
-                # Check if we're being silly
-                if random.random() > 0.75:
+                if silly:
                     self.moveUp()
                 else:
                     self.moveDown()
             if self.ypos > ballybot:
-                if random.random() > 0.75:
+                if silly:
                     self.moveDown()
                 else:
                     self.moveUp()
@@ -78,49 +82,39 @@ class Player:
         return self.ypos
 
 
-def getBacklightLevel(l) -> float:
+def getBacklightLevel(light) -> float:
     # Keep the display dim to save battery
-    reading: float = float(l.read_u16())
+    reading: float = float(light.read_u16())
     # Values seem to be between 0.0 - 25000.0
     bl: float = (reading / 25000.0) + 0.1
     # Lower than 0.4 seems to turn off the backlight
-    if bl < 0.4:
-        bl = 0.4
-    if bl > 0.99:
-        bl = 1.0
+    bl = max(bl, 0.4)
+    bl = min(bl, 1.0)
     return bl
 
 
 def clearScreen() -> None:
-    global display
     display.set_pen(0)
     display.clear()
 
 
-def computeNameSize() -> int:
-    global firstname
-    global lastname
-    maxwidth: int = 240
-    namesize: int = 5
+def computeNameSize() -> None:
+    global namesize
+    maxwidth = const(240)
+    namesize = 5
     fnamewidth: int = display.measure_text(firstname, namesize)
     lnamewidth: int = display.measure_text(lastname, namesize)
     namewidth: int = max(fnamewidth, lnamewidth)
     while namewidth > maxwidth:
+        if namesize == 1:
+            return
         namesize -= 1
         fnamewidth = display.measure_text(firstname, namesize)
         lnamewidth = display.measure_text(lastname, namesize)
         namewidth = max(fnamewidth, lnamewidth)
-    return namesize
-
-
-namesize: int = computeNameSize()
 
 
 def displayScore(p1s: int, p2s: int) -> None:
-    global display
-    global firstname
-    global lastname
-    global namesize
     fnamewidth: int = display.measure_text(firstname, namesize)
     lnamewidth: int = display.measure_text(lastname, namesize)
     fnoffset = ((240 - fnamewidth) // 2) + 40
@@ -136,72 +130,67 @@ def displayScore(p1s: int, p2s: int) -> None:
 
 
 def displayPlayers(p1h: int, p2h: int) -> None:
-    global display
     display.set_pen(224)
     display.rectangle(0, p1h, 20, 50)
     display.rectangle(300, p2h, 20, 50)
 
 
 def moveBall(
-    x: int, y: int, l: bool, u: bool, p1s: Player, p2s: Player
+    bx: int, by: int, lr: bool, ud: bool, p1s: Player, p2s: Player
 ) -> (int, int, bool, bool):
-    if l is False:
+    if lr is False:
         # We're moving right
-        if x > 280:
-            x = 160
-            y = 120
+        if bx > 280:
+            bx = 160
+            by = 120
             p1s.addScore()
-            l = True if random.random() <= 0.5 else False
-            u = True if random.random() <= 0.5 else False
+            lr = random.random() <= 0.5
+            ud = random.random() <= 0.5
         else:
-            x += 1
+            bx += 1
     else:
-        if x < 20:
-            x = 160
-            y = 120
+        if bx < 20:
+            bx = 160
+            by = 120
             p2s.addScore()
-            l = True if random.random() <= 0.5 else False
-            u = True if random.random() <= 0.5 else False
+            lr = random.random() <= 0.5
+            ud = random.random() <= 0.5
         else:
-            x -= 1
+            bx -= 1
 
-    if u is False:
-        # We're going down
-        if y > 220:
-            u = True
-            y -= 1
+    if ud is False:
+        if by > 220:
+            ud = True
+            by -= 1
         else:
-            y += 1
+            by += 1
     else:
-        if y < 92:
-            u = False
-            y += 1
+        if by < 92:
+            ud = False
+            by += 1
         else:
-            y -= 1
-    return x, y, l, u
+            by -= 1
+    return bx, by, lr, ud
 
 
-def displayBall(x: int, y: int, color: int) -> None:
-    global display
+def displayBall(bx: int, by: int, color: int) -> None:
     display.set_pen(color)
-    display.rectangle(x, y, 20, 20)
+    display.rectangle(bx, by, 20, 20)
 
 
-def detectCollision(x: int, y: int, p1c: Player, p2c: Player, l: bool) -> bool:
-    if x == 20:
-        if p1c.collision(y):
-            l = not l
-    if x == 280:
-        if p2c.collision(y):
-            l = not l
-    return l
+def detectCollision(
+    bx: int, by: int, p1c: Player, p2c: Player, lr: bool
+) -> bool:
+    if bx == 20:
+        if p1c.collision(by):
+            lr = not lr
+    if bx == 280:
+        if p2c.collision(by):
+            lr = not lr
+    return lr
 
 
-def showQRCode(l) -> None:
-    global qrtext
-    global display
-    global WIDTH
-    global HEIGHT
+def showQRCode(lx) -> None:
     clearScreen()
     code = qrcode.QRCode()
     code.set_text(qrtext)
@@ -213,37 +202,43 @@ def showQRCode(l) -> None:
     offset_y: int = (HEIGHT // 2) - ((ys * pixel_size) // 2)
     display.set_pen(255)
     display.rectangle(0, 0, WIDTH, HEIGHT)
-    for x in range(xs - 1):
-        for y in range(ys - 1):
-            borw: bool = code.get_module(x, y)
-            xp: int = x * pixel_size
-            yp: int = y * pixel_size
+    for qx in range(xs - 1):
+        for qy in range(ys - 1):
+            borw: bool = code.get_module(qx, qy)
+            xp: int = qx * pixel_size
+            yp: int = qy * pixel_size
             display.set_pen(255 if borw else 0)
-            display.rectangle(xp + offset_x, yp + offset_y, pixel_size, pixel_size)
+            display.rectangle(
+                xp + offset_x, yp + offset_y, pixel_size, pixel_size
+            )
     display.set_backlight(1.0)
     display.update()
     time.sleep(10)
-    display.set_backlight(getBacklightLevel(l))
+    display.set_backlight(getBacklightLevel(lx))
 
 
 # Do the basic initialization
+gc.collect()
+gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
 random.seed()
-display.set_backlight(0.5)
+computeNameSize()
 display.set_font("bitmap8")
 lux_pwr = Pin(27, Pin.OUT)
 lux_pwr.value(1)
+del(lux_pwr)  # memory is tight, remove anything not needed
 lux = ADC(26)
+display.set_backlight(getBacklightLevel(lux))
 p1: Player = Player(0)
 p2: Player = Player(300)
-lorr: bool = True if random.random() <= 0.5 else False
-uord: bool = True if random.random() <= 0.5 else False
+lorr: bool = random.random() <= 0.5
+uord: bool = random.random() <= 0.5
 x: int = 160
 y: int = 100
 # [red, orange, yellow, green. blue, indigo, violet]
-c = [224, 236, 252, 28, 3, 102, 66]
+c: List[int] = [224, 236, 252, 28, 3, 102, 66]
 index: int = 0
 count: int = 0
-high: int = 15
+high = const(15)
 while True:
     clearScreen()
     displayScore(p1.getScore(), p2.getScore())
@@ -253,13 +248,12 @@ while True:
     displayPlayers(p1.getPosition(), p2.getPosition())
     lorr = detectCollision(x, y, p1, p2, lorr)
     displayBall(x, y, c[index])
-    count += 1
-    if count == 10:
-        index += 1
-        count = 0
-        if index > len(c) - 1:
-            index = 0
+    count = (count + 1) % 10
+    if not count:
+        index = (index + 1) % 7
         display.set_backlight(getBacklightLevel(lux))
+        gc.collect()
+        gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
     if p1.getScore() == high or p2.getScore() == high:
         clearScreen()
         display.set_pen(255)
@@ -271,6 +265,8 @@ while True:
         p2.reset()
         x = 160
         y = 100
+        gc.collect()
+        gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
     display.update()
     if (
         button_a.is_pressed
