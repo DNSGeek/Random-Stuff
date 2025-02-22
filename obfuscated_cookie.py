@@ -48,7 +48,7 @@ def IlIlIllIlllIlIllll(
 def llIlIlllllIlIlIIlI(
     IlllIIllllIIIIIlll: llllllllllllllI,
 ) -> IIIIlllllIlllI[llIIlIIllIIIlI, None]:
-    """Pass in a string generated from makeCookie to get the
+    """Pass in a string generated from IlIlIllIlllIlIllll to get the
     original data, with full error checking to ensure that the
     data wasn't tampered with in transit."""
     IIllIIIIllIIIIlIIl = IlllIIllllIIIIIlll[:55].encode("utf-8")
