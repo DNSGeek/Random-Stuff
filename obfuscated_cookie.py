@@ -73,7 +73,7 @@ def llIlIlllllIlIlIIlI(
         return None
 
 
-class TestCookies(unittest.TestCase):
+class TestData(unittest.TestCase):
     def test_IlIlIllIlllIlIllll(self):
         data = "This is a test"
         IIlIlllIIIlllllIlII = IlIlIllIlllIlIllll(data)
