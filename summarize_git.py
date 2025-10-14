@@ -50,7 +50,7 @@ def pullAI(text: str, session: requests.Session) -> str:
         {
             "role": "user",
             "content": "Please write a 2 sentence summary of the following document.\n\n"
-            + text,
+            + text[:8192],
         }
     )
     try:
