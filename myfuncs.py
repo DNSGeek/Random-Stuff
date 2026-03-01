@@ -8,14 +8,8 @@ from functools import wraps
 from types import FrameType
 from typing import Any, Optional, TypeVar
 
-# FIX: removed the `if "DEBUG" not in globals()` guard — that pattern is a Python 2
-# holdover that does nothing useful in a module context. If callers want to gate on
-# DEBUG, they should configure the logging level directly (see logging.basicConfig below).
-
 logging.basicConfig(format="%(asctime)s %(message)s")
 
-# Generic type var so @timeit and @timeout preserve the wrapped function's signature
-# for type checkers instead of collapsing it to (*args, **kwargs) -> Any.
 F = TypeVar("F", bound=Callable[..., Any])
 
 
@@ -24,8 +18,6 @@ def timeit(some_func: F) -> F:
 
     @wraps(some_func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        # OPT: time.perf_counter() over time.time() — higher resolution monotonic
-        # clock, not affected by system clock adjustments.
         t1: float = time.perf_counter()
         result: Any = some_func(*args, **kwargs)
         diff: float = time.perf_counter() - t1
@@ -54,14 +46,10 @@ def memory_usage(vm_key: str = "VmRSS:") -> int:
 
     Common keys: VmRSS (resident), VmSize (virtual), VmPeak (peak virtual).
     """
-    # OPT: use context manager — the original manually opened, read, closed, and
-    # del'd the handle, which is exception-unsafe and verbose.
     try:
         with open(f"/proc/{os.getpid()}/status") as f:
             status: str = f.read()
     except OSError:
-        # FIX: was catching IOError specifically; in Python 3 IOError is an alias
-        # for OSError, but OSError is the correct base class to catch here.
         return 0  # non-Linux or permission denied
 
     try:
@@ -72,14 +60,10 @@ def memory_usage(vm_key: str = "VmRSS:") -> int:
             return 0
         scale: float = _VM_SCALE.get(parts[2], 0.0)
         if scale == 0.0:
-            return 0  # FIX: was KeyError-prone dict lookup; .get() with fallback is safe
+            return 0
         return round(float(parts[1]) * scale)
     except (ValueError, IndexError):
         return 0
-
-
-# Keep the old private name as an alias so existing callers don't break.
-_VmB = memory_usage
 
 
 def daemonize() -> None:
@@ -87,11 +71,6 @@ def daemonize() -> None:
 
     Uses the standard UNIX double-fork technique to ensure the daemon cannot
     re-acquire a controlling terminal. Safe on Python 3 on any POSIX system.
-
-    Note: subprocess.DEVNULL is available in Python 3.3+, so the fallback
-    import of os.devnull has been removed.
-
-    FIX: docstring previously said 'Python 2.4+' — updated to reflect Python 3.
     """
     import resource
 
@@ -116,15 +95,12 @@ def daemonize() -> None:
 
     for fd in range(
         maxfd
-    ):  # OPT: range(0, n) → range(n); 0 is the default start
+    ):
         try:
             os.close(fd)
         except OSError:
             pass  # fd wasn't open; that's fine
 
-    # FIX: removed try/except ImportError fallback for os.devnull — subprocess.DEVNULL
-    # has been available since Python 3.3 and is simply the integer -3, not a path.
-    # We need the actual /dev/null path string for os.open(), so use os.devnull directly.
     null_fd: int = os.open(
         os.devnull, os.O_RDWR
     )  # Opens as fd 0 (stdin → /dev/null)
@@ -132,20 +108,8 @@ def daemonize() -> None:
     os.dup2(null_fd, 2)  # stderr → /dev/null
 
 
-# Keep the old capitalised name as an alias so existing callers don't break.
-Daemonize = daemonize
-
-
-# FIX: Python 3.3+ has a built-in TimeoutError (subclass of OSError). Redefining
-# it as a plain Exception subclass shadows the built-in and is surprising to callers.
-# We define our own distinct class so it doesn't collide, and document the distinction.
 class TimedOutError(Exception):
-    """Raised by the @timeout decorator when a function exceeds its time limit.
-
-    Distinct from Python 3's built-in TimeoutError (an OSError subclass used for
-    network/IO timeouts) to avoid masking unrelated OS-level timeout exceptions.
-    """
-
+    """Raised by the @timeout decorator when a function exceeds its time limit."""
     pass
 
 
@@ -155,8 +119,6 @@ def timeout(
 ) -> Callable[[F], F]:
     """Decorator that raises TimedOutError if the wrapped function runs too long.
 
-    Uses SIGALRM, so it only works on POSIX systems and only on the main thread.
-
     Usage:
         @timeout(2.5, 'That took way too long')
         def my_func(some, args):
@@ -165,10 +127,7 @@ def timeout(
             except TimedOutError as e:
                 logging.debug("Timed out: %s", e)
 
-    FIX: inner functions were untyped and @wraps was applied manually at the end
-    rather than as a decorator. Cleaned up and fully typed.
-
-    SECURITY: signal-based timeouts are not thread-safe. Only use this decorator
+    Signal-based timeouts are not thread-safe. Only use this decorator
     on the main thread. If you need thread-safe timeouts, use concurrent.futures
     with a ThreadPoolExecutor or ProcessPoolExecutor instead.
     """
@@ -184,10 +143,6 @@ def timeout(
             try:
                 return func(*args, **kwargs)
             finally:
-                # FIX: the original called signal.alarm(0) to cancel — but since we
-                # set a floating-point timer with setitimer, we must cancel with
-                # setitimer too. signal.alarm() only works with integer seconds and
-                # does not cancel an ITIMER_REAL set by setitimer on all platforms.
                 signal.setitimer(signal.ITIMER_REAL, 0)
 
         return wrapper  # type: ignore[return-value]

@@ -21,11 +21,9 @@ def get_dirs(base_dir: str = ".") -> list[str]:
     for name in os.listdir(base_dir):
         if name.startswith("."):
             continue
-        # FIX: check isdir AFTER the dot-filter to avoid a stat call on every
-        # hidden entry — minor but adds up on repos with many dotfiles.
         if os.path.isdir(os.path.join(base_dir, name)):
             dirs.append(name)
-    return sorted(dirs)  # OPT: sort here so callers get a predictable order
+    return sorted(dirs)
 
 
 def pull_readme(base_dir: str, dir_name: str) -> str:
@@ -39,9 +37,6 @@ def pull_readme(base_dir: str, dir_name: str) -> str:
         if entry.lower() == "readme.md":
             readme_path: str = os.path.join(full_dir, entry)
             try:
-                # OPT: read() instead of readlines() + join() — one call, same result.
-                # FIX: added encoding='utf-8' — open() in text mode uses the locale
-                # default which can vary; many READMEs are UTF-8.
                 with open(
                     readme_path, "r", encoding="utf-8", errors="replace"
                 ) as f:
@@ -53,13 +48,6 @@ def pull_readme(base_dir: str, dir_name: str) -> str:
 
 def pull_ai(text: str, session: requests.Session) -> str:
     """Send text to the local LLM and return a 2-3 sentence summary, or '' on failure."""
-    # FIX: was building the dict by assigning keys one at a time — use a literal.
-    # Also: 'data' was reused for both the request payload AND the response JSON,
-    # which is a shadowing bug — after `data = response.json()` the original
-    # request dict is gone. Renamed response JSON to `resp_json`.
-    # FIX: Union[str, int, float, list[dict[str, str]]] was the type annotation but
-    # 'stream': False is a bool and 'max_tokens': -1 is an int — use Any for the
-    # value type since this is an open-ended JSON payload.
     payload: dict[str, Any] = {
         "model": LLM_MODEL,
         "temperature": 0.7,
@@ -82,8 +70,6 @@ def pull_ai(text: str, session: requests.Session) -> str:
     try:
         response: requests.Response = session.post(
             LLM_URL,
-            # FIX: removed explicit Content-Type header — requests sets it automatically
-            # when you pass json=; adding it manually is redundant and error-prone.
             json=payload,
         )
         response.raise_for_status()
@@ -94,9 +80,6 @@ def pull_ai(text: str, session: requests.Session) -> str:
     ) as ex:  # Yeah, yeah. I know. I don't care what the error was though.
         stderr.write(f"\n\nLLM call failed with error: {ex}\n\n")
         return ""
-    # FIX: removed response.close() — requests.Session handles connection pooling;
-    # manually closing the response object here is unnecessary and slightly harmful
-    # (it prevents keep-alive reuse across the loop iterations).
 
 
 if __name__ == "__main__":
@@ -112,8 +95,6 @@ if __name__ == "__main__":
     summaries: dict[str, str] = {}
     failed: list[str] = []
 
-    # OPT: use a single Session for all requests — keeps the TCP connection alive
-    # across calls (already done) and ensures it's properly closed when done.
     with requests.Session() as session:
         for subdir in get_dirs(basedir):
             text: str = pull_readme(basedir, subdir)
@@ -126,11 +107,10 @@ if __name__ == "__main__":
             else:
                 failed.append(subdir)
 
-    # OPT: summaries is already keyed by name; sorted() on a dict iterates sorted keys.
     with open("summaries.txt", "w", encoding="utf-8") as summ:
         for key in sorted(
             summaries
-        ):  # OPT: sorted(dict) over sorted(dict.keys()) — idiomatic
+        ):
             summ.write(f"{key}: {summaries[key]}\n\n")
 
     if failed:

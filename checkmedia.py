@@ -15,7 +15,7 @@ tlock = threading.Lock()
 tqueue: queue.Queue[str] = queue.Queue()
 NUMTHREADS: int = max(
     2, multiprocessing.cpu_count() // 2
-)  # OPT: // instead of int(x / 2)
+)
 RSIZE: int = 1024 * 1024
 
 # Type alias for the 4-element fstat list: [size, atime, mtime, ctime]
@@ -64,13 +64,12 @@ def openDB(
         )
         cur: sqlite3.Cursor = conn.cursor()
         conn.text_factory = str
-        # OPT: execute all PRAGMAs in one executescript call — fewer round-trips
         cur.executescript(
             "PRAGMA auto_vacuum = 2;"
             "PRAGMA encoding = 'UTF-8';"
             "PRAGMA temp_store = MEMORY;"
             "PRAGMA journal_mode = WAL;"
-            "PRAGMA synchronous = NORMAL;"  # OPT: NORMAL is safe with WAL and faster than FULL
+            "PRAGMA synchronous = NORMAL;"
         )
         cur.execute(
             "CREATE TABLE IF NOT EXISTS media ("
@@ -174,11 +173,8 @@ def getFStat(path: str) -> FStat:
 
 def computeHash(path: str) -> str:
     try:
-        # OPT: sha256 over md5 — better collision resistance for a fingerprint DB,
-        # negligible speed difference at 1MB read chunks, and no FIPS concerns.
         h = hashlib.sha256()
         with open(path, "rb") as f:
-            # OPT: walrus operator — eliminates the priming read before the loop
             while chunk := f.read(RSIZE):
                 h.update(chunk)
         return h.hexdigest()
@@ -199,8 +195,6 @@ def compareStats(
 
 
 def hashThreads(cur: sqlite3.Cursor, paths: list[str]) -> None:
-    # OPT: accumulate inserts locally, then flush as a single executemany batch.
-    # This reduces lock acquisitions from O(changed files) to O(1) per thread.
     batch: list[InsertRow] = []
 
     for fullpath in paths:
@@ -256,8 +250,6 @@ if __name__ == "__main__":
 
     closeDB(conn, cur)
 
-    # OPT: drain queue with get_nowait in a loop rather than checking empty() first
-    # (empty() is not reliable under concurrent use, though we're single-threaded here)
     while True:
         try:
             path = tqueue.get_nowait()
