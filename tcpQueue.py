@@ -99,10 +99,7 @@ from random import random
 from time import sleep
 from typing import Any, Optional
 
-try:
-    from nmSys import sendAlert
-except ImportError:
-    import syslog
+import syslog
 
 DEBUG: bool = False
 SHUTDOWN: bool = False
@@ -126,7 +123,7 @@ def _make_frame(data: bytes) -> bytes:
 
 
 def logger(msg: Any, SYSLOGID: str = "pyTCPQueue") -> None:
-    """Sends alerts to nmSys or to syslog if nmSys not defined."""
+    """Sends alerts to syslog."""
     msg_str = str(msg)
     if not msg_str:
         return
@@ -137,12 +134,9 @@ def logger(msg: Any, SYSLOGID: str = "pyTCPQueue") -> None:
         if DEBUG:
             print("%s: %s" % (SYSLOGID, msg_str))
         else:
-            try:
-                sendAlert(node(), msg_str, "warn", "rad-sre@%s" % SYSLOGID)
-            except Exception:
-                syslog.openlog(SYSLOGID)
-                syslog.syslog(msg_str)
-                syslog.closelog()
+            syslog.openlog(SYSLOGID)
+            syslog.syslog(msg_str)
+            syslog.closelog()
 
 
 def manageWorkers() -> None:

@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, call, patch
 
 # ---------------------------------------------------------------------------
 # Bootstrap: provide stub modules for optional dependencies so the import
-# works in any environment (no nmSys, syslog available on non-Unix systems).
+# works in any environment (syslog available on non-Unix systems).
 # ---------------------------------------------------------------------------
 
 _syslog_stub = types.ModuleType("syslog")
@@ -32,7 +32,6 @@ _syslog_stub.openlog = MagicMock()
 _syslog_stub.syslog = MagicMock()
 _syslog_stub.closelog = MagicMock()
 sys.modules.setdefault("syslog", _syslog_stub)
-sys.modules.setdefault("nmSys", types.ModuleType("nmSys"))
 
 import tcpQueue  # noqa: E402  (must come after stub setup)
 
