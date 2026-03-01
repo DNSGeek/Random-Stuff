@@ -10,7 +10,6 @@ Run with:
     python -m pytest test_tcpQueue.py -v
 """
 
-import io
 import pickle
 import socket
 import sys
@@ -19,8 +18,7 @@ import time
 import types
 import unittest
 import zlib
-from collections import deque
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Bootstrap: provide stub modules for optional dependencies so the import

@@ -16,7 +16,6 @@ Protocol (single-byte commands):
     b"S"  → peer informs us they are Secondary; we set our state to S
 """
 
-import os
 import queue
 import signal
 import socket

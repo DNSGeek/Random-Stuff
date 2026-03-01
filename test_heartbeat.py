@@ -13,12 +13,10 @@ Run with:
 import queue
 import socket
 import subprocess
-import sys
 import threading
 import time
-import types
 import unittest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import heartbeat
 
@@ -521,7 +519,6 @@ class TestReElectionLogic(unittest.TestCase):
         """
         Simulate one election cycle. Returns (final_myState, bytes_sent_to_peer).
         """
-        sent = []
         mock_sock = MagicMock()
         mock_sock.recv.return_value = bytes([remote_rand])
 
