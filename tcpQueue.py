@@ -91,14 +91,13 @@ if __name__ == '__main__':
 
 import pickle
 import socket
+import syslog
 import threading
 import zlib
 from collections import deque
 from random import random
 from time import sleep
 from typing import Any, Optional
-
-import syslog
 
 DEBUG: bool = False
 SHUTDOWN: bool = False

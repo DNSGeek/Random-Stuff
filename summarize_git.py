@@ -65,7 +65,9 @@ def pullAI(text: str, session: requests.Session) -> str:
         content = data["choices"][0]["message"]["content"]
         response.close()
         return content
-    except Exception as ex:  # Yeah, yeah. I know. I don't care what the error was thoiugh.
+    except (
+        Exception
+    ) as ex:  # Yeah, yeah. I know. I don't care what the error was though.
         stderr.write(f"\n\nLLM call failed with error: {ex}\n\n")
         return ""
 
