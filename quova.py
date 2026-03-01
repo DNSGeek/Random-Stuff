@@ -1,246 +1,311 @@
-#!/usr/local/bin/pypy -O
+#!/usr/bin/env python3
+"""
+quova.py — A Python 3 emulator for the Quova GeoIP protocol.
 
-# Change the interpreter above to your Python interpreter.
+Listens on a TCP port, decodes Quova-format IP lookup requests,
+and responds with GeoIP data using the MaxMind GeoLiteCity database.
+"""
 
+from __future__ import annotations
+
+import logging
 import socket
-import syslog
+import sys
 import time
+from threading import Thread
+from typing import Final, TypedDict
 
-# from multiprocessing import Process as Worker
-from threading import Thread as Worker
-
-import daemon  # http://pypi.python.org/pypi/python-daemon/
+import daemon  # https://pypi.org/project/python-daemon/
 import pygeoip  # https://github.com/appliedsec/pygeoip
 
-WORKER_MAX = 256  # How many threads/processes to have.
-DEAD_TIME = 1  # How long in seconds to wait for dead thread removal.
-MAX_BUF = 1024  # How large a buffer for each thread's receive stream.
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
-HOST = ""  # Empty is all interfaces, otherwise specify an IP to listen on
-PORT = 12345  # What TCP port to listen to for new connections.
+WORKER_MAX: Final[int] = 256  # Max concurrent threads
+DEAD_TIME: Final[float] = 1.0  # Seconds between dead-thread reaping
+MAX_BUF: Final[int] = 1024  # Per-thread receive buffer size
+HOST: Final[str] = ""  # Empty = all interfaces; set to a specific IP if needed
+PORT: Final[int] = 12345  # TCP port to listen on
 
-# The MaxMind GeoLiteCity database full path and filename
-# https://www.miyuru.lk/geoiplegacy
-# Updated the first Tuesday of each month.
-GEOIPDB = "/root/geolocate/GeoLiteCity.dat"
+# MaxMind GeoLiteCity database path — updated the first Tuesday of each month.
+# Download: https://www.miyuru.lk/geoiplegacy
+GEOIPDB: Final[str] = "/root/geolocate/GeoLiteCity.dat"
 
-# The identifier that will be used for this process in syslog.
-SYSLOGID = "pyquova"
+SYSLOGID: Final[str] = "pyquova"
 
-# This IP resolves to very close to the center of the 48 contiguous states.
-DEFAULT_IP = "129.130.8.50"
+# This IP resolves to roughly the geographic centre of the contiguous US
+# (Lat 39°50' N, Long 98°35' W) and is used as a safe fallback.
+DEFAULT_IP: Final[str] = "129.130.8.50"
 
-############################################################################
-# You shouldn't need to change anything below this line.                   #
-############################################################################
-
-# A counter to keep track of the number of lookups performed.
-# The pointy-hairs like metrics. ^_^
-statcounter = 0
+# ---------------------------------------------------------------------------
+# GeoIP record type
+# ---------------------------------------------------------------------------
 
 
-def uni_to_ba(ba, data):
+class GeoIPRecord(TypedDict, total=False):
+    """Shape of a pygeoip record dict, as returned by record_by_addr()."""
+
+    country_name: str
+    region_name: str
+    city: str
+    country_code: str
+    dma_code: str | int
+    area_code: str | int
+    postal_code: str
+    metro_code: str | int
+    latitude: str | float
+    longitude: str | float
+
+
+# ---------------------------------------------------------------------------
+# Logging setup  (replaces direct syslog calls for testability)
+# ---------------------------------------------------------------------------
+
+log: logging.Logger = logging.getLogger(SYSLOGID)
+
+
+def _configure_logging(use_syslog: bool = True) -> None:
+    """Attach a SysLogHandler (production) or StreamHandler (dev/tests)."""
+    log.setLevel(logging.DEBUG)
+    handler: logging.Handler
+    if use_syslog:
+        from logging.handlers import SysLogHandler
+
+        handler = SysLogHandler(address="/dev/log")
+    else:
+        handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        logging.Formatter("%(name)s: %(levelname)s %(message)s")
+    )
+    log.addHandler(handler)
+
+
+# ---------------------------------------------------------------------------
+# Global metrics counter
+# ---------------------------------------------------------------------------
+
+statcounter: int = 0
+
+# ---------------------------------------------------------------------------
+# Packet constants
+# ---------------------------------------------------------------------------
+
+_HEADER: Final[bytes] = (
+    b"\x00" * 16
+    + b"\x01"  # 1 record returned
+    + b"\x00" * 7
+    + b"\x0c"  # 12 fields per record
+    + b"\x00" * 7
+    + b"\x06Mapped"  # field 0x06 = "Mapped"
+    + b"\xff\xff\xff\xff"
+    + b"\x00\x00\x00\x0e\x00\x00\x00"
+)
+
+_SEP: Final[bytes] = b"\xff\xff\xff\xff\x00\x00\x00"
+
+_ERROR_RESPONSE: Final[bytes] = b"\x00" * 32  # 0 records, 0 fields
+
+# Each entry is (quova_field_id_byte, GeoIPRecord key).
+_FIELD_MAP: Final[list[tuple[bytes, str]]] = [
+    (b"\x06", "country_name"),
+    (b"\x07", "region_name"),
+    (b"\x08", "city"),
+    (b"\x03", "country_code"),
+    (b"\x0a", "dma_code"),
+    (b"\x1b", "area_code"),
+    (b"\x0f", "postal_code"),
+    (b"\x04", "metro_code"),
+    (b"\x08", "latitude"),
+    (b"\x09", "longitude"),
+]
+
+# ---------------------------------------------------------------------------
+# Packet helpers
+# ---------------------------------------------------------------------------
+
+
+def _append_field(buf: bytearray, field_id: bytes, value: str) -> bytearray:
+    """Encode a single Quova response field and append it to *buf*."""
+    encoded: bytes = value.lower().encode("utf-8", errors="replace")
+    buf += _SEP + field_id + b"\x00\x00\x00"
+    buf.append(len(encoded))
+    buf += encoded
+    return buf
+
+
+def decode_quova(data: bytes) -> str:
+    """
+    Extract the IPv4 address from the last 4 bytes of a Quova request packet.
+
+    Returns a dotted-decimal string, or DEFAULT_IP on any error.
+    """
+    if len(data) < 4:
+        log.warning(
+            "Packet too short to contain an IP address (%d bytes)", len(data)
+        )
+        return DEFAULT_IP
     try:
-        newba = ba
-        data = str(data)
-        for i in data:
-            newba.append(ord(i))
-        return newba
-    except Exception as ex:
-        syslog.syslog("ERROR appending unicode to bytearray: %s" % str(ex))
-        return ba
-
-
-def decode_quova(data):
-    try:
-        IP = data[-4:]
-        octets = "%d.%d.%d.%d" % (IP[0], IP[1], IP[2], IP[3])
-        return octets
-    except Exception as ex:
-        syslog.syslog("Unable to decode passed in IP %s: %s" % (str(data), str(ex)))
+        return "%d.%d.%d.%d" % (data[-4], data[-3], data[-2], data[-1])
+    except Exception:
+        log.exception("Unable to decode IP from packet: %r", data)
         return DEFAULT_IP
 
 
-def encode_quova(ipinfo, IP):
-    # Create a spoofed Quova packet.
-    # Header:
-    #    16 x \x0
-    #    Number of records returned in the response (always \x01 here)
-    #    7 x \x0
-    #    Number of fields in the record, always \x0c (12) here.
-    #    7 x \x0
-    #    Start of returned data.
-    # Returned data:
-    #    \x## The code for the data returned in this field.
-    #    3 x \x0
-    #    \x## The number of bytes in the field response
-    #    The data for the response.
-    #    Either 4 x \xff OR
-    #     3 x \x00 followed by \x##.
+def encode_quova(ipinfo: GeoIPRecord, ip: str) -> bytes:
+    """
+    Build a Quova-format response packet from a pygeoip record dict.
+
+    Falls back to _ERROR_RESPONSE if encoding fails.
+    """
     global statcounter
     try:
-        # A static header to speed up response generation.
-        resba = bytearray(
-            b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x0c\x00\x00\x00\x00\x00\x00\x00\x06Mapped\xff\xff\xff\xff\x00\x00\x00\x0e\x00\x00\x00"
+        buf: bytearray = bytearray(_HEADER)
+
+        for field_id, key in _FIELD_MAP:
+            buf = _append_field(buf, field_id, str(ipinfo.get(key, "")))  # type: ignore[arg-type]
+
+        # Terminator
+        buf += _SEP + b"\x02\x00\x00\x00\x01\x30\xff\xff\xff\xff"
+
+        statcounter += 1
+        return bytes(buf)
+
+    except Exception:
+        log.exception(
+            "Error generating Quova packet for IP %s; ipinfo=%s", ip, ipinfo
         )
-        sep = bytearray(b"\xff\xff\xff\xff\x00\x00\x00")
-        resba.append(len(str(ipinfo["country_name"])))
-        resba = uni_to_ba(resba, str(ipinfo["country_name"]).lower())
-        resba += sep + b"\x06\x00\x00\x00"
-        resba.append(len(str(ipinfo["region_name"])))
-        resba += str(ipinfo["region_name"]).lower()
-        resba += sep + b"\x07\x00\x00\x00"
-        resba.append(len(str(ipinfo["city"])))
-        resba = uni_to_ba(resba, str(ipinfo["city"]).lower())
-        resba += sep + b"\x03\x00\x00\x00"
-        resba.append(len(str(ipinfo["country_code"])))
-        resba = uni_to_ba(resba, str(ipinfo["country_code"]).lower())
-        resba += sep + b"\x0a\x00\x00\x00"
-        resba.append(len(str(ipinfo["dma_code"])))
-        resba += str(ipinfo["dma_code"]).lower()
-        resba += sep + b"\x1b\x00\x00\x00"
-        resba.append(len(str(ipinfo["area_code"])))
-        resba += str(ipinfo["area_code"]).lower()
-        resba += sep + b"\x0f\x00\x00\x00"
-        resba.append(len(str(ipinfo["postal_code"])))
-        resba += str(ipinfo["postal_code"]).lower()
-        resba += sep + b"\x04\x00\x00\x00"
-        resba.append(len(str(ipinfo["metro_code"])))
-        resba += str(ipinfo["metro_code"]).lower()
-        resba += sep + b"\x08\x00\x00\x00"
-        resba.append(len(str(ipinfo["latitude"])))
-        resba += str(ipinfo["latitude"]).lower()
-        resba += sep + b"\x09\x00\x00\x00"
-        resba.append(len(str(ipinfo["longitude"])))
-        resba += str(ipinfo["longitude"]).lower()
-        # Finalize the response.
-        resba += sep + b"\x02\x00\x00\x00\x01\x30\xff\xff\xff\xff"
-    except Exception as ex:
-        syslog.syslog(
-            "Error generating Quova packet for IP %s: %s. GeoIP info was %s"
-            % (str(IP), str(ex), str(ipinfo))
-        )
-        # This should mean 0 records of 0 fields each.
-        resba = b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
-
-    statcounter += 1
-    return resba
+        return _ERROR_RESPONSE
 
 
-def process_connection(client_sock):
-    global statcounter
+# ---------------------------------------------------------------------------
+# Connection handler
+# ---------------------------------------------------------------------------
+
+
+def _fallback_record(geoip: pygeoip.GeoIP) -> GeoIPRecord:
+    """Return the GeoIP record for DEFAULT_IP as a last-resort fallback."""
+    record: GeoIPRecord | None = geoip.record_by_addr(DEFAULT_IP)
+    return record if record is not None else GeoIPRecord()
+
+
+def _close_socket(sock: socket.socket, label: str = "") -> None:
+    """Attempt a graceful shutdown and close of *sock*, logging any errors."""
     try:
-        GEOIP = pygeoip.GeoIP(GEOIPDB)
-    except Exception as ex:
-        syslog.syslog("Unable to open the GeoIP database: %s" % str(ex))
-        try:
-            client_sock.shutdown(socket.SHUT_RDWR)
-            client_sock.close()
-        except Exception as ex:
-            syslog.syslog("Unable to close socket 1: %s" % str(ex))
-        finally:
-            return
-    while True:  # The thread will go away when the connection closes.
-        try:
-            data = bytearray()
-            chunk = client_sock.recv(MAX_BUF)
-            data.extend(chunk)
-        except Exception as ex:
+        sock.shutdown(socket.SHUT_RDWR)
+        sock.close()
+    except OSError as exc:
+        log.debug("Close socket%s: %s", f" ({label})" if label else "", exc)
+
+
+def process_connection(client_sock: socket.socket) -> None:
+    """Handle a single client connection in its own thread."""
+    geoip: pygeoip.GeoIP
+    try:
+        geoip = pygeoip.GeoIP(GEOIPDB)
+    except Exception:
+        log.exception("Unable to open GeoIP database '%s'", GEOIPDB)
+        _close_socket(client_sock, "db-open-fail")
+        return
+
+    try:
+        while True:
+            chunk: bytes
             try:
-                client_sock.shutdown(socket.SHUT_RDWR)
-                client_sock.close()
-            except Exception as ex:
-                syslog.syslog("Unable to close socket 2: %s" % str(ex))
-            finally:
-                syslog.syslog("Unable to read client socket: %s" % str(ex))
+                chunk = client_sock.recv(MAX_BUF)
+            except OSError:
+                log.exception("Error reading from client socket")
                 return
-        try:
-            if data is None:
-                syslog.syslog("No data received. Closing socket.")
+
+            if not chunk:
+                log.debug("Client closed connection (empty read).")
+                return
+
+            # Stats command — send counter and close.
+            if len(chunk) > 4 and chunk[:5] == b"stats":
                 try:
-                    client_sock.shutdown(socket.SHUT_RDWR)
-                    client_sock.close()
-                except Exception as ex:
-                    syslog.syslog("Unable to close socket 3: %s" % str(ex))
+                    client_sock.sendall(f"{statcounter}\n".encode())
+                    log.info("Sent statistics: %d queries.", statcounter)
+                except OSError:
+                    log.exception("Error sending stats response")
                 return
-        except Exception as ex:
-            syslog.syslog("Unable to check for None buffer: %s" % str(ex))
 
-        try:
-            if len(str(chunk)) > 4 and str(chunk[0:4]) == "stats":
-                client_sock.sendall("%d\n" % statcounter)
-                syslog.syslog("Sent statistics. %u queries." % statcounter)
-                client_sock.shutdown(socket.SHUT_RDWR)
-                client_sock.close()
-                return
-        except Exception as ex:
-            syslog.syslog("Unable to check for stats command: %s" % str(ex))
-        IP = decode_quova(data)
-        try:
-            ipinfo = GEOIP.record_by_addr(IP)
-        except Exception as ex:
-            ipinfo = GEOIP.record_by_addr(DEFAULT_IP)
-            syslog.syslog("Error looking up IP %s: %s" % (str(IP), str(ex)))
-        if ipinfo is None:
-            # The GEOGRAPHIC CENTER of the UNITED STATES
-            # LAT. 39°50' LONG. -98°35'
-            ipinfo = GEOIP.record_by_addr(DEFAULT_IP)
-        try:
-            client_sock.sendall(encode_quova(ipinfo, IP))
-        except Exception as ex:
+            ip: str = decode_quova(chunk)
+
+            ipinfo: GeoIPRecord | None
             try:
-                client_sock.shutdown(socket.SHUT_RDWR)
-                client_sock.close()
-            except Exception as ex:
-                syslog.syslog("Unable to close socket 4: %s" % str(ex))
-            finally:
-                syslog.syslog(
-                    "Unable to send GeoIP response for IP %s: %s" % (str(IP), str(ex))
-                )
+                ipinfo = geoip.record_by_addr(ip)
+            except Exception:
+                log.exception("Error looking up IP %s", ip)
+                ipinfo = None
+
+            if ipinfo is None:
+                log.debug("No GeoIP record for %s; using default.", ip)
+                ipinfo = _fallback_record(geoip)
+
+            try:
+                client_sock.sendall(encode_quova(ipinfo, ip))
+            except OSError:
+                log.exception("Error sending GeoIP response for IP %s", ip)
                 return
-    return
+    finally:
+        _close_socket(client_sock, "connection-done")
 
 
-def server_loop(listen_sock):
-    client_sock, sockname = listen_sock.accept()
+# ---------------------------------------------------------------------------
+# Server / worker pool
+# ---------------------------------------------------------------------------
+
+
+def server_loop(listen_sock: socket.socket) -> None:
+    """Accept one connection and hand it off to process_connection."""
+    client_sock: socket.socket
+    client_sock, _ = listen_sock.accept()
     process_connection(client_sock)
-    return
 
 
-def start_worker(Worker, listen_sock):
-    worker = Worker(target=server_loop, args=(listen_sock,))
-    worker.daemon = True
+def start_worker(listen_sock: socket.socket) -> Thread:
+    """Spawn and return a new daemon thread running server_loop."""
+    worker: Thread = Thread(
+        target=server_loop, args=(listen_sock,), daemon=True
+    )
     worker.start()
     return worker
 
 
-def sock_setup():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+def sock_setup() -> socket.socket:
+    """Create, bind, and return a listening TCP socket."""
+    sock: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((HOST, PORT))
-    sock.listen(512)  # Number of connections to pend. Shouldn't be important.
+    sock.listen(512)
     return sock
 
 
-# Detach from the PTY and run as a daemon.
-# Comment the daemon line and uncomment the while line to not daemonize.
-with daemon.DaemonContext():
-    # while True:
-    # Open a syslog connection to set the app ID.
-    syslog.openlog(SYSLOGID)
-    listen_sock = sock_setup()
+def run(daemonize: bool = True) -> None:
+    """Entry point — optionally daemonize, then run the worker pool."""
+    _configure_logging(use_syslog=daemonize)
 
-    # Spin up all the threads/processes.
-    workers = []
-    for i in range(WORKER_MAX):
-        workers.append(start_worker(Worker, listen_sock))
-    syslog.syslog("Started the Python Quova emulator.")
+    def _main() -> None:
+        listen_sock: socket.socket = sock_setup()
+        workers: list[Thread] = [
+            start_worker(listen_sock) for _ in range(WORKER_MAX)
+        ]
+        log.info("Started the Python Quova emulator on port %d.", PORT)
 
-    # Check every DEAD_TIME seconds for dead workers and replace them.
-    while True:
-        time.sleep(DEAD_TIME)
-        for worker in workers:
-            if not worker.is_alive():
-                workers.remove(worker)
-                # syslog.syslog("Started new worker.")
-                workers.append(start_worker(Worker, listen_sock))
+        while True:
+            time.sleep(DEAD_TIME)
+            dead: list[Thread] = [w for w in workers if not w.is_alive()]
+            for w in dead:
+                workers.remove(w)
+                workers.append(start_worker(listen_sock))
+
+    if daemonize:
+        with daemon.DaemonContext():
+            _main()
+    else:
+        _main()
+
+
+if __name__ == "__main__":
+    run(daemonize=True)

@@ -2,7 +2,7 @@
 """
 This class implements a bidirectional TCP message queue in pure Python.
 This class has background threads to process the queues so all requests
-are handled asynchronously. It is fully fault tolerent, but does not
+are handled asynchronously. It is fully fault tolerant, but does not
 guarantee message delivery. If there is a problem sending a message,
 the class will attempt to resend the message 3 times, then if it is
 still unsuccessful it will give up and drop the message on the floor.
@@ -27,9 +27,9 @@ myQueue.sendToConsumer(): Push data into the Consumer queue
 myQueue.getProducer(): Pull the Producer queue from the server
 myQueue.sendToProducer(): Push data into the Producer queue
 myQueue.isPQEmpty(): Returns True if there is no data in the Producer queue
-myQueue.isCQEmpty(): Returns True if there is not data in the Consumer queue
-myQueue.PQSize(): Returns the number of data in the Producer queue
-myQueue.CQSize(): Returns the number of data in the Consumer queue
+myQueue.isCQEmpty(): Returns True if there is no data in the Consumer queue
+myQueue.PQSize(): Returns the number of items in the Producer queue
+myQueue.CQSize(): Returns the number of items in the Consumer queue
 
 How to use:
 
@@ -45,14 +45,11 @@ def procQueue():
         sleep(SOME_NUM_OF_SECS)
         alldata = []
         data = prodQ.getProducer()
-        while data != [] and data is not None: # Pull all the data
+        while data != [] and data is not None:  # Pull all the data
             alldata.append(data)
-            del(data)
             data = prodQ.getProducer()
-        if alldata != []:
-            processData(alldata) # User defined function
-        del(alldata)
-        del(data)
+        if alldata:
+            processData(alldata)  # User defined function
 
 if __name__ == '__main__':
     myQ = tcpQueue.myQueue("127.0.0.1")
@@ -60,17 +57,15 @@ if __name__ == '__main__':
     myQ.startClient()
 
     # Run as a background thread to process the results asynchronously.
-    worker = threading.Thread(target = procQueue)
+    worker = threading.Thread(target=procQueue)
     worker.daemon = True
     worker.start()
 
     while True:
-        data = getDataToProcess() # User defined function
+        data = getDataToProcess()  # User defined function
         for datum in data:
-            myQ.sendToConsumer(datum) # Feed the queue
-        del(data)
-        if 'datum' in locals(): del(datum)
-        while myQ.CQSize > SOME_THRESHOLD: # Sleep until the queue has been processed to a low water mark.
+            myQ.sendToConsumer(datum)  # Feed the queue
+        while myQ.CQSize() > SOME_THRESHOLD:  # Sleep until the queue drains to a low water mark.
             sleep(SOME_NUM_OF_SECS)
 
 For the client:
@@ -80,21 +75,18 @@ from sys import argv
 
 def getDatum(myQ):
     datum = myQ.getConsumer()
-    while datum == [] or datum is None: # Wait for something to be pushed into the queue
-        del(datum)
+    while datum == [] or datum is None:  # Wait for something to be pushed into the queue
         sleep(SOME_NUM_OF_SECS)
         datum = myQ.getConsumer()
-    return(datum)
+    return datum
 
 if __name__ == '__main__':
-    myQ = tcpQueue(argv[1]) # Pass in the IP of the server as the first argument
+    myQ = tcpQueue.myQueue(argv[1])  # Pass in the IP of the server as the first argument
     myQ.startClient()
     while True:
         datum = getDatum(myQ)
-        result = processDatum(datum) # User defined function
+        result = processDatum(datum)  # User defined function
         myQ.sendToProducer(result)
-        del(datum)
-        del(result)
 """
 
 import pickle
@@ -104,7 +96,6 @@ import zlib
 from collections import deque
 from platform import node
 from random import random
-from sys import exit
 from time import sleep
 from typing import Any, Optional
 
@@ -125,84 +116,101 @@ prodLock: threading.Lock = threading.Lock()
 workerLock: threading.Lock = threading.Lock()
 logLock: threading.Lock = threading.Lock()
 
+# Pre-encode the empty-queue sentinel once rather than re-compressing on every miss.
+_EMPTY_PAYLOAD: bytes = zlib.compress(pickle.dumps([]), 1)
+
+
+def _make_frame(data: bytes) -> bytes:
+    """Wrap a payload in the length-prefix framing format: b'<len>:<data>'."""
+    return str(len(data)).encode() + b":" + data
+
 
 def logger(msg: Any, SYSLOGID: str = "pyTCPQueue") -> None:
     """Sends alerts to nmSys or to syslog if nmSys not defined."""
-    if len(str(msg)) < 1:
-        return  # Bail if no message was sent.
+    msg_str = str(msg)
+    if not msg_str:
+        return
 
-    logLock.acquire()
-    if (
-        "DEBUG" in globals() and DEBUG is True
-    ):  # If in DEBUG mode, just print and return.
-        print("%s: %s" % (SYSLOGID, str(msg)))
-    else:
-        try:
-            sendAlert(node(), str(msg), "warn", "rad-sre@%s" % SYSLOGID)
-        except Exception:
-            syslog.openlog(SYSLOGID)
-            syslog.syslog(str(msg))
-            syslog.closelog()
-
-    logLock.release()
-    return
+    # Capture the log string before acquiring the lock so the lock is held only
+    # for the minimal critical section (the print/syslog call itself).
+    with logLock:
+        if DEBUG:
+            print("%s: %s" % (SYSLOGID, msg_str))
+        else:
+            try:
+                sendAlert(node(), msg_str, "warn", "rad-sre@%s" % SYSLOGID)
+            except Exception:
+                syslog.openlog(SYSLOGID)
+                syslog.syslog(msg_str)
+                syslog.closelog()
 
 
 def manageWorkers() -> None:
-    """Keeps the workers clean and the memory low."""
+    """Reaps finished worker threads to keep memory tidy."""
     while True:
-        if SHUTDOWN is True:
-            workerLock.acquire()
-            while len(workerQueue) > 0:
-                worker: threading.Thread = workerQueue.pop()
-                if not worker.is_alive():
-                    worker.join(0.1)
-                else:
-                    workerQueue.appendleft(worker)
-                del worker
-            workerLock.release()
+        if SHUTDOWN:
+            with workerLock:
+                while workerQueue:
+                    worker: threading.Thread = workerQueue.pop()
+                    if not worker.is_alive():
+                        worker.join(0.1)
+                    else:
+                        workerQueue.appendleft(worker)
+                        sleep(
+                            0.1
+                        )  # Avoid busy-spinning while waiting for threads to finish.
             return
+
         sleep(10)
-        workerLock.acquire()
-        workers: list[threading.Thread] = []
-        for i in range(0, len(workerQueue)):
-            workers.append(workerQueue.pop())
-        workerQueue.clear()
-        for worker in workers:
-            if not worker.is_alive():
-                worker.join(0.1)
-            else:
-                workerQueue.append(worker)
-        workerLock.release()
+        with workerLock:
+            # Drain the queue, reap finished threads, re-enqueue the rest.
+            live: list[threading.Thread] = []
+            while workerQueue:
+                worker = workerQueue.pop()
+                if worker.is_alive():
+                    live.append(worker)
+                else:
+                    worker.join(0.1)
+            for worker in live:
+                workerQueue.appendleft(worker)
 
 
 def _recv_exactly(sock: socket.socket, n: int) -> Optional[bytes]:
-    """Receive exactly n bytes from a socket. Returns None if the connection closes early."""
-    buf: bytes = b""
-    while len(buf) < n:
-        chunk: bytes = sock.recv(n - len(buf))
+    """Receive exactly n bytes from a socket.
+    Returns None if the connection closes before n bytes arrive."""
+    chunks: list[bytes] = []
+    received: int = 0
+    while received < n:
+        chunk: bytes = sock.recv(n - received)
         if not chunk:
             return None
-        buf += chunk
-    return buf
+        chunks.append(chunk)
+        received += len(chunk)
+    return b"".join(chunks)
 
 
 def _read_framed_message(sock: socket.socket) -> Optional[bytes]:
-    """Read a length-prefixed message in the format 'LEN:DATA'.
-    Returns the raw bytes payload, None if the connection was closed,
-    or raises ValueError for a malformed frame."""
-    cnt: bytes = b""
-    total: bytes = b""
-    while cnt != b":" and len(total) < 10:
-        cnt = sock.recv(1)
-        if not cnt:
+    """Read a length-prefixed message in the format b'LEN:DATA'.
+    Returns the raw bytes payload, or None if the connection was closed.
+    Raises ValueError for a malformed frame."""
+    header: bytes = b""
+    while len(header) < 10:
+        byte: bytes = sock.recv(1)
+        if not byte:
             return None
-        total += cnt
-    if len(total) > 9:
+        if byte == b":":
+            break
+        header += byte
+    else:
+        # Consumed 10 bytes without finding a colon — malformed frame.
         raise ValueError(
-            "Invalid TCP message frame header: %s" % str(total[:9])
+            "Frame header too long or missing colon: %s" % header[:9]
         )
-    length: int = int(total[:-1])  # strip the trailing ':'
+
+    if not header:
+        raise ValueError("Empty frame header")
+
+    length: int = int(header)
     return _recv_exactly(sock, length)
 
 
@@ -219,96 +227,100 @@ def _close_socket(sock: socket.socket) -> None:
 
 
 def serverThread(client_sock: socket.socket) -> None:
-    """Manages the server socket."""
-    while True:
-        if SHUTDOWN is True:
-            _close_socket(client_sock)
-            exit(0)
-        try:
-            sockData: Optional[bytes] = _read_framed_message(client_sock)
+    """Manages a single accepted client connection on the server side.
+    Runs until the client disconnects, an unrecoverable error occurs, or
+    SHUTDOWN is set. Exits by returning (not sys.exit) so the thread dies
+    cleanly without taking down the whole process."""
+    try:
+        while True:
+            if SHUTDOWN:
+                return
+
+            try:
+                sockData: Optional[bytes] = _read_framed_message(client_sock)
+            except ValueError as ex:
+                logger(
+                    "Malformed frame received, closing connection: %s"
+                    % str(ex)
+                )
+                return
+
             if sockData is None:
-                _close_socket(client_sock)
-                exit(0)
+                # Client closed the connection cleanly.
+                return
 
             cmd: bytes = sockData[:1].lower()
             data: bytes
-            if cmd == b"c":
-                consumerLock.acquire()
-                if len(consumerQueue) > 0:
-                    data = consumerQueue.pop()
-                else:
-                    consumerQueue.clear()
-                    data = zlib.compress(pickle.dumps([]), 1)
-                consumerLock.release()
-                frame: bytes = b"%d:" % len(data) + data
-                client_sock.sendall(frame)
-            elif cmd == b"p":
-                prodLock.acquire()
-                if len(producerQueue) > 0:
-                    data = producerQueue.pop()
-                else:
-                    producerQueue.clear()
-                    data = zlib.compress(pickle.dumps([]), 1)
-                prodLock.release()
-                frame = b"%d:" % len(data) + data
-                client_sock.sendall(frame)
-            else:
-                prodLock.acquire()
-                producerQueue.appendleft(sockData)
-                prodLock.release()
 
-        except ValueError as ex:
-            logger("Malformed frame received: %s" % str(ex))
-            _close_socket(client_sock)
-            exit(0)
-        except Exception as ex:
-            logger("Unable to process socket connection: %s" % str(ex))
-            _close_socket(client_sock)
-            exit(0)
+            if cmd == b"c":
+                with consumerLock:
+                    data = (
+                        consumerQueue.pop()
+                        if consumerQueue
+                        else _EMPTY_PAYLOAD
+                    )
+                client_sock.sendall(_make_frame(data))
+
+            elif cmd == b"p":
+                with prodLock:
+                    data = (
+                        producerQueue.pop()
+                        if producerQueue
+                        else _EMPTY_PAYLOAD
+                    )
+                client_sock.sendall(_make_frame(data))
+
+            else:
+                with prodLock:
+                    producerQueue.appendleft(sockData)
+
+    except Exception as ex:
+        logger("Unexpected error in server connection thread: %s" % str(ex))
+    finally:
+        _close_socket(client_sock)
 
 
 def controllingThread(sock: socket.socket) -> None:
-    """Starts up new client sockets as needed."""
+    """Accepts incoming connections and dispatches each to a serverThread."""
     while True:
         try:
-            client_sock, sockname = sock.accept()
+            client_sock, _sockname = sock.accept()
             # 13s of ping + up to 60s of HTTP(S) timeouts = 73 + 2 for transport overhead
             client_sock.settimeout(75.0)
             worker = threading.Thread(target=serverThread, args=(client_sock,))
             worker.daemon = True
             worker.start()
-            workerLock.acquire()
-            workerQueue.appendleft(worker)
-            workerLock.release()
+            with workerLock:
+                workerQueue.appendleft(worker)
         except Exception as ex:
             logger("Unable to accept connection: %s" % str(ex))
             sleep(1)
-            continue
 
 
 class myQueue:
-    """This is the main TCP Queue class."""
+    """Bidirectional TCP message queue."""
 
     def __init__(self, host: str = "127.0.0.1", port: int = 49152) -> None:
         """Initializes the queueing system but does not start the queues.
-        Will use 127.0.0.1 if no host specified, port 49152 if no port specified.
-        """
+        Uses 127.0.0.1 if no host specified, port 49152 if no port specified.
+        Raises ValueError for invalid host or port."""
         if not isinstance(host, str):
-            logger("Started with invalid host")
-            return
+            raise ValueError(
+                "host must be a string, got %s" % type(host).__name__
+            )
         if not isinstance(port, int) or not (1 <= port <= 65535):
-            logger("Started with invalid port")
-            return
+            raise ValueError(
+                "port must be an integer between 1 and 65535, got %r" % port
+            )
 
         self.myAddr: tuple[str, int] = (host, port)
         self.ssock: Optional[socket.socket] = None
         self.csock: Optional[socket.socket] = None
         self.workerThread: Optional[threading.Thread] = None
         self.socketThread: Optional[threading.Thread] = None
-        return
 
     def startServer(self) -> None:
-        """Starts up the server queue. Backgrounds the queue for
+        """Starts the server queue. Backgrounds the listener for
         asynchronous communication and returns immediately."""
         try:
             self.ssock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -327,7 +339,6 @@ class myQueue:
         except Exception as ex:
             logger("Unable to start Message Queue Server: %s" % str(ex))
             self.ssock = None
-        return
 
     def startClient(self) -> None:
         """Connects to the server queue in client mode."""
@@ -337,37 +348,30 @@ class myQueue:
         except Exception as ex:
             logger("Unable to connect to server: %s" % str(ex))
             self.close()
-        return
 
     def close(self) -> None:
-        """Cleanly shuts down and closes the client queue connection."""
-        from inspect import getmembers
-
+        """Cleanly shuts down and closes the client connection."""
         if self.csock is not None:
             _close_socket(self.csock)
-            del self.csock
             self.csock = None
-        for name, obj in getmembers(self):
-            if name.startswith("__"):
-                continue
+
+        # Clear any instance-level dicts and lists.
+        for name, obj in vars(self).items():
             if isinstance(obj, dict):
                 try:
-                    eval("self.%s.clear()" % name)
+                    obj.clear()
                 except Exception as ex:
-                    print(
-                        "Unable to clear dictionary %s: %s" % (name, str(ex))
-                    )
-            if isinstance(obj, list):
+                    print("Unable to clear dictionary %s: %s" % (name, ex))
+            elif isinstance(obj, list):
                 try:
-                    eval("self.%s[:] = []" % name)
+                    obj.clear()
                 except Exception as ex:
-                    print("Unable to clear list %s: %s" % (name, str(ex)))
-        return
+                    print("Unable to clear list %s: %s" % (name, ex))
 
     def getConsumer(self) -> Any:
-        """Attempts to get the next entry from the Consumer queue on the server.
+        """Attempts to get the next entry from the Consumer queue.
         Returns the entry if it exists.
-        Returns [] if no data to pull.
+        Returns [] if the queue is empty.
         Returns None if an error occurred."""
         if self.csock is None:
             self.startClient()
@@ -384,58 +388,54 @@ class myQueue:
             except Exception:
                 return zlib.decompress(sockData)
         except Exception as ex:
-            logger("Unable to receive data: %s" % str(ex))
-        self.close()
-        return []
+            logger("Unable to receive Consumer data: %s" % str(ex))
+            self.close()
+            return []
 
     def sendToProducer(self, blob: Any) -> None:
-        """Sends data from the client to the Producer queue for processing by the server.
-        In event of message failure, will attempt to re-send 3 times.
-        After 3 attempts if not successful, will drop the message and continue.
-        """
-        sndcnt: int = -1
-        while sndcnt < 3:
-            sndcnt += 1
+        """Sends data to the Producer queue for processing by the server.
+        On failure, retries up to 3 times with a random back-off, then drops
+        the message and continues."""
+        data: bytes
+        try:
+            data = zlib.compress(pickle.dumps(blob), 1)
+        except Exception:
+            data = zlib.compress(blob, 1)
+
+        for attempt in range(3):
             if self.csock is None:
                 self.startClient()
                 if self.csock is None:
                     return
-            data: bytes
             try:
-                data = zlib.compress(pickle.dumps(blob), 1)
-            except Exception:
-                data = zlib.compress(blob, 1)
-            try:
-                frame: bytes = b"%d:" % len(data) + data
-                self.csock.sendall(frame)
-                sndcnt = 3
+                self.csock.sendall(_make_frame(data))
+                return  # Success — done.
             except Exception as ex:
                 self.close()
-                logger("Unable to send data: %s" % str(ex))
+                logger(
+                    "Unable to send data (attempt %d/3): %s"
+                    % (attempt + 1, str(ex))
+                )
                 sleep(random() * 2)
-        return
 
     def sendToConsumer(self, blob: Any) -> None:
-        """Pushes data into the Consumer queue from the server."""
-        data: bytes
+        """Pushes data into the Consumer queue (server side)."""
         try:
-            data = zlib.compress(pickle.dumps(blob), 9)
+            data: bytes = zlib.compress(pickle.dumps(blob), 1)
         except Exception:
             data = zlib.compress(blob, 1)
-        consumerLock.acquire()
-        consumerQueue.appendleft(data)
-        consumerLock.release()
-        return
+        with consumerLock:
+            consumerQueue.appendleft(data)
 
     def getProducer(self) -> Any:
-        """Gets data from the Producer queue on the server.
+        """Gets the next item from the Producer queue.
         Returns the data if it exists.
-        Returns [] if no data in the queue.
-        Returns None if there was an error communicating."""
+        Returns [] if the queue is empty.
+        Returns None if there was a communication error."""
         if self.csock is None:
             self.startClient()
             if self.csock is None:
-                logger("Unable to get Producer data")
+                logger("Unable to get Producer data: could not connect")
                 return []
         try:
             self.csock.sendall(b"1:p")
@@ -445,7 +445,7 @@ class myQueue:
                 return []
         except Exception as ex:
             self.close()
-            logger("Unable to receive data: %s" % str(ex))
+            logger("Unable to receive Producer data: %s" % str(ex))
             sleep(random() * 2)
             return []
         try:
@@ -454,37 +454,35 @@ class myQueue:
             return zlib.decompress(sockData)
 
     def clearQueues(self) -> None:
-        consumerLock.acquire()
-        consumerQueue.clear()
-        consumerLock.release()
-        prodLock.acquire()
-        producerQueue.clear()
-        prodLock.release()
-        return
+        """Clears both the Consumer and Producer queues."""
+        with consumerLock:
+            consumerQueue.clear()
+        with prodLock:
+            producerQueue.clear()
 
     def isPQEmpty(self) -> bool:
-        """Returns True if there is no data in the Producer queue, False otherwise.
-        This function will only work on the server, not on the clients."""
+        """Returns True if the Producer queue is empty.
+        Only meaningful on the server side."""
         return self.PQSize() == 0
 
     def isCQEmpty(self) -> bool:
-        """Returns True if there is no data in the Consumer queue, False otherwise.
-        This function will only work on the server, not on the clients."""
+        """Returns True if the Consumer queue is empty.
+        Only meaningful on the server side."""
         return self.CQSize() == 0
 
     def CQSize(self) -> int:
-        """Returns the number of elements in the Consumer queue.
-        This function will only work on the server, not on the clients."""
+        """Returns the number of items in the Consumer queue.
+        Only meaningful on the server side."""
         return len(consumerQueue)
 
     def PQSize(self) -> int:
-        """Returns the number of elements in the Producer queue.
-        This function will only work on the server, not on the clients."""
+        """Returns the number of items in the Producer queue.
+        Only meaningful on the server side."""
         return len(producerQueue)
 
     def __str__(self) -> str:
-        """Returns a str representation of all non-private instance variables, alphabetized.
-        The data is returned as a list of lists: [['varname', value], ...]"""
+        """Returns a string representation of all non-private instance
+        variables, as a sorted list of [name, value] pairs."""
         from inspect import getmembers, isroutine
 
         myDict: dict[str, Any] = {
@@ -492,7 +490,4 @@ class myQueue:
             for name, obj in getmembers(self)
             if not isroutine(obj) and not name.startswith("__")
         }
-        retval: list[list[Any]] = [
-            [k, myDict[k]] for k in sorted(myDict.keys())
-        ]
-        return str(retval)
+        return str([[k, myDict[k]] for k in sorted(myDict.keys())])
