@@ -2,7 +2,7 @@ import logging
 import os
 import time
 from functools import wraps
-from typing import Dict
+from typing import Any, Dict, Optional
 
 # Import the CherryPy modules.
 import cherrypy
@@ -22,43 +22,56 @@ PORT: int = 8080
 TIMEOUT: int = 900
 # Where are the templates?
 TEMPLATE_DIR: str = f"{os.getcwd()}/templates"
-# Wanna run ing debug mode?
+# Wanna run in debug mode?
 DEBUG: bool = False
 
 
 # looks for files in the templates directory
-def render(filename: str, data: Dict):
+def render(filename: str, data: Dict) -> str:
     return django.template.loader.get_template(filename).render(data)
+
+
+def _get_cookie() -> Optional[Any]:
+    """Read and decode the app cookie from the current request.
+    Returns None if the cookie is absent or invalid."""
+    morsel = cherrypy.request.cookie.get(myApp)
+    if morsel is None:
+        return None
+    return eatCookie(morsel.value)
+
+
+def _refresh_cookie(myCookie: Any) -> None:
+    """Update the timeout timestamp and write the cookie to the response."""
+    if isinstance(myCookie, dict):
+        now: int = int(
+            time.time()
+        )  # FIX: was time.localtime() which returns struct_time, not int
+        cookie_time: int = myCookie.get("__cookieTime__", now)
+        if now - cookie_time > TIMEOUT:
+            myCookie["__cookieTime__"] = 0
+        else:
+            myCookie["__cookieTime__"] = now
+
+    encCookie = makeCookie(myCookie)
+    cherrypy.response.cookie[myApp] = encCookie
+    cherrypy.response.headers["Cache-Control"] = (
+        "no-store, no-cache, must-revalidate, post-check=0, pre-check=0"
+    )
+    cherrypy.response.headers["Pragma"] = "no-cache"
 
 
 # Cookies can be anything. A str, a list, a dict, whatever you want.
 def cookie_work(func):
     @wraps(func)
     def wrapped(self, *args, **kwargs):
-        # Get the cookie (if it exists)
-        cookie = cherrypy.request.cookie[myApp].value
+        # FIX: was a bare dict lookup that would KeyError if cookie was absent.
+        # Now returns None gracefully when the cookie is missing or invalid.
+        myCookie = _get_cookie()
+        if myCookie is None:
+            raise cherrypy.HTTPError(401, "Missing or invalid session cookie.")
 
-        # Decode the cookie
-        myCookie = eatCookie(cookie)
+        _refresh_cookie(myCookie)
 
-        # Update the current time for timeout purposes
-        if isinstance(myCookie, dict):
-            now: int = int(time.localtime())
-            if "__cookieTime__" in myCookie:
-                cookie_time: int = myCookie["__cookieTime__"]
-                if now - cookie_time > TIMEOUT:
-                    myCookie["__cookieTime__"] = 0
-                else:
-                    myCookie["__cookieTime__"] = now
-
-        # Make the new cookie to return to the client
-        encCookie = makeCookie(myCookie)
-
-        cherrypy.response.cookie[myApp] = encCookie
-        cherrypy.response.headers[
-            "Cache-Control"
-        ] = "no-store, no-cache, must-revalidate, post-check=0, pre-check=0"
-        cherrypy.response.headers["Pragma"] = "no-cache"
         # Continue on into the function that was originally called.
         return func(self, myCookie, *args, **kwargs)
 
@@ -67,7 +80,9 @@ def cookie_work(func):
 
 def check_all(klass):
     for attr, method in list(klass.__dict__.items()):
-        if hasattr(method, "__call__"):
+        if callable(
+            method
+        ):  # FIX: hasattr(method, "__call__") is the old way; callable() is idiomatic
             if attr != "index":
                 method = cookie_work(method)
             setattr(klass, attr, cherrypy.expose(method))
@@ -80,7 +95,9 @@ class Root:
     # Every function besides index will get cookie_work called automagically
     def index(self):
         # Initialize the cookie
-        encCookie = makeCookie({"my": "data"})
+        encCookie = makeCookie(
+            {"my": "data", "__cookieTime__": int(time.time())}
+        )
         cherrypy.response.cookie[myApp] = encCookie
         return render(
             "index.html",
@@ -136,8 +153,8 @@ if __name__ == "__main__":
             "server.socket_port": PORT,
             "server.ssl_certificate": os.getcwd() + "/ssl/server.crt",
             "server.ssl_private_key": os.getcwd() + "/ssl/server.key",
-            "request.show_tracebacks": False if not DEBUG else True,
-            "checker.on": False if not DEBUG else True,
+            "request.show_tracebacks": DEBUG,
+            "checker.on": DEBUG,
             "tools.caching.on": False,
             "tools.log_headers.on": True,
             "engine.autoreload_on": True,
