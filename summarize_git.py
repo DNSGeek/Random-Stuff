@@ -49,8 +49,8 @@ def pullAI(text: str, session: requests.Session) -> str:
     data["messages"].append(
         {
             "role": "user",
-            "content": "Please write a 2 sentence summary of the following document.\n\n"
-            + text[:8192],
+            "content": "Please write a concise 2 to 3 sentence summary of the following document.\n\n"
+            + text[:10240],
         }
     )
     try:
