@@ -6,8 +6,6 @@ Listens on a TCP port, decodes Quova-format IP lookup requests,
 and responds with GeoIP data using the MaxMind GeoLiteCity database.
 """
 
-from __future__ import annotations
-
 import logging
 import socket
 import sys
