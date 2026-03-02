@@ -93,9 +93,7 @@ def daemonize() -> None:
     if maxfd == resource.RLIM_INFINITY:
         maxfd = 1024  # POSIX minimum; use as a safe fallback
 
-    for fd in range(
-        maxfd
-    ):
+    for fd in range(maxfd):
         try:
             os.close(fd)
         except OSError:
@@ -110,6 +108,7 @@ def daemonize() -> None:
 
 class TimedOutError(Exception):
     """Raised by the @timeout decorator when a function exceeds its time limit."""
+
     pass
 
 

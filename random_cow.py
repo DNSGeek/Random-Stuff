@@ -43,19 +43,15 @@ def print_fortune(fortune: str, cowlist: list[str]) -> None:
     try:
         cow: str = choice(cowlist)
 
-        cow_pipe: Popen[str] = (
-            Popen(
-                [COWSAY, "-f", cow],
-                stdin=PIPE,
-                stdout=PIPE,
-                stderr=PIPE,
-                text=True,
-            )
+        cow_pipe: Popen[str] = Popen(
+            [COWSAY, "-f", cow],
+            stdin=PIPE,
+            stdout=PIPE,
+            stderr=PIPE,
+            text=True,
         )
         cow_fortune: str
-        cow_fortune, _ = cow_pipe.communicate(
-            input=fortune
-        )
+        cow_fortune, _ = cow_pipe.communicate(input=fortune)
         print(cow_fortune)
     except Exception as ex:
         print(f"Unable to print fortune: {ex}")

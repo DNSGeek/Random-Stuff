@@ -108,9 +108,7 @@ if __name__ == "__main__":
                 failed.append(subdir)
 
     with open("summaries.txt", "w", encoding="utf-8") as summ:
-        for key in sorted(
-            summaries
-        ):
+        for key in sorted(summaries):
             summ.write(f"{key}: {summaries[key]}\n\n")
 
     if failed:

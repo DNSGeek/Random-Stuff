@@ -16,6 +16,8 @@ Protocol (single-byte commands):
     b"S"  → peer informs us they are Secondary; we set our state to S
 """
 
+import argparse
+import logging
 import queue
 import signal
 import socket
@@ -34,7 +36,6 @@ from typing import Optional
 myState: str = "D"
 workerQueue: queue.Queue[threading.Thread] = queue.Queue()
 TDELAY: float = 5.0
-DEBUG: bool = True
 
 # ---------------------------------------------------------------------------
 # Signal handling
@@ -43,7 +44,7 @@ DEBUG: bool = True
 
 def sigint_handler(sig: int, frame: Optional[FrameType]) -> None:
     """Stub handler — add any cleanup here before exit."""
-    print("\n\n*** Signal caught, exiting. ***\n\n")
+    logging.info("*** Signal caught, exiting. ***")
     exit(0)
 
 
@@ -52,15 +53,14 @@ def sigint_handler(sig: int, frame: Optional[FrameType]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def checkForServer(processname: str = "nsn_server.py") -> None:
+def checkForServer(processname: str = "my_server.py") -> None:
     """Demotes to Secondary if the managed server process is not running.
 
     NOTE: This function only demotes — it never promotes. Re-election via
     the heartbeat protocol is responsible for promotion back to Primary.
     """
     global myState
-    if DEBUG:
-        print("Checking for %s process" % processname)
+    logging.debug(f"Checking for {processname} process")
     try:
         result = subprocess.run(
             ["/bin/ps", "-C", processname, "--no-heading"],
@@ -69,13 +69,11 @@ def checkForServer(processname: str = "nsn_server.py") -> None:
         )
         running = bool(result.stdout.strip())
     except Exception as ex:
-        if DEBUG:
-            print("Unable to check for server process: %s" % str(ex))
+        logging.debug(f"Unable to check for server process: {ex}")
         myState = "S"
         return
     if not running:
-        if DEBUG:
-            print("%s not found — demoting to Secondary" % processname)
+        logging.debug(f"{processname} not found — demoting to Secondary")
         myState = "S"
 
 
@@ -88,8 +86,7 @@ def countdown() -> None:
     """Fired when TDELAY seconds pass with no heartbeat response.
     Assumes the remote is gone and claims Primary."""
     global myState
-    if DEBUG:
-        print("Countdown reached — no heartbeat response, claiming Primary")
+    logging.info("Countdown reached — no heartbeat response, claiming Primary")
     myState = "P"
 
 
@@ -113,8 +110,7 @@ def manageWorkers() -> None:
                 live.append(worker)
             else:
                 worker.join(0.1)
-                if DEBUG:
-                    print("*** Removed worker ***")
+                logging.debug("*** Removed worker ***")
         for worker in live:
             workerQueue.put(worker)
 
@@ -153,42 +149,35 @@ def clientThread(client_sock: socket.socket) -> None:
             try:
                 cnt: bytes = client_sock.recv(1)
             except Exception as ex:
-                if DEBUG:
-                    print("Error receiving in clientThread: %s" % str(ex))
+                logging.debug(f"Error receiving in clientThread: {ex}")
                 return
 
             if not cnt:
-                if DEBUG:
-                    print("Client disconnected cleanly")
+                logging.debug("Client disconnected cleanly")
                 return
 
-            if DEBUG:
-                print("Thread received %s" % str(cnt))
+            logging.debug(f"Thread received {cnt!r}")
 
             if cnt == b"g":
                 try:
                     client_sock.sendall(myState.encode())
-                    if DEBUG:
-                        print("Sent state: %s" % myState)
+                    logging.debug(f"Sent state: {myState}")
                 except Exception as ex:
-                    if DEBUG:
-                        print("Error sending state: %s" % str(ex))
+                    logging.debug(f"Error sending state: {ex}")
                     return
 
             elif cnt == b"r":
                 try:
                     client_sock.sendall(bytes([int(random() * 10)]))
                 except Exception as ex:
-                    if DEBUG:
-                        print("Error sending re-election byte: %s" % str(ex))
+                    logging.debug(f"Error sending re-election byte: {ex}")
                     return
 
             elif cnt in (b"P", b"S"):
                 myState = cnt.decode()
 
             else:
-                if DEBUG:
-                    print("Unknown command %s — closing connection" % str(cnt))
+                logging.debug(f"Unknown command {cnt!r} — closing connection")
                 return
     finally:
         _close_socket(client_sock)
@@ -200,8 +189,7 @@ def serverThread(ssock: socket.socket) -> None:
         try:
             client_sock, _sockname = ssock.accept()
         except Exception as ex:
-            if DEBUG:
-                print("Accept failed: %s" % str(ex))
+            logging.debug(f"Accept failed: {ex}")
             return
         client_sock.settimeout(5.0)
         client_sock.setblocking(True)
@@ -220,15 +208,34 @@ if __name__ == "__main__":
     signal.signal(signal.SIGHUP, sigint_handler)
     signal.signal(signal.SIGTERM, sigint_handler)
 
-    try:
-        if len(argv) < 3:
-            print("USAGE: %s Server_IP Remote_Server_IP" % str(argv[0]))
-            exit(0)
-        myip: str = str(argv[1])
-        remoteip: str = str(argv[2])
-    except Exception as ex:
-        print("Invalid command line: %s" % str(ex))
-        exit(-1)
+    parser = argparse.ArgumentParser(prog="heartbeat")
+    parser.add_argument(
+        "-m",
+        "--my-ip",
+        help="The IP to use for the heartbeat service on this system",
+        required=True,
+    )
+    parser.add_argument(
+        "-r",
+        "--remote-ip",
+        help="The IP of the heartbeat service on the remote system",
+        required=True,
+    )
+    parser.add_argument(
+        "-d",
+        "--debug",
+        help="Enable debug mode [Default=no]",
+        required=False,
+        action="store_true",
+        default=False,
+    )
+    args = parser.parse_args()
+    myip: str = args["my-ip"]
+    remoteip: str = args["remote-ip"]
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)s:\t%(message)s",
+        level=logging.INFO if not args["debug"] else logging.DEBUG,
+    )
 
     HBaddr: tuple[str, int] = (myip, 53281)
 
@@ -250,7 +257,7 @@ if __name__ == "__main__":
         )
         socketThread.start()
     except Exception as ex:
-        print("Unable to start heartbeat server: %s" % str(ex))
+        logging.critical(f"Unable to start heartbeat server: {ex}")
         exit(-2)
 
     myState = "U"
@@ -272,8 +279,7 @@ if __name__ == "__main__":
                 csock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 csock.connect((remoteip, 53281))
             except Exception as ex:
-                if DEBUG:
-                    print("Unable to connect to remote: %s" % str(ex))
+                logging.error(f"Unable to connect to remote: {ex}")
                 _close_socket(csock)  # Close the fd before discarding.
                 csock = None
                 time.sleep(1.0)
@@ -287,8 +293,7 @@ if __name__ == "__main__":
         try:
             csock.sendall(b"g")
         except Exception as ex:
-            if DEBUG:
-                print("Failed to send heartbeat: %s" % str(ex))
+            logging.info(f"Failed to send heartbeat: {ex}")
             _close_socket(csock)
             csock = None
             continue
@@ -302,15 +307,13 @@ if __name__ == "__main__":
         try:
             cnt = csock.recv(1)
         except Exception as ex:
-            if DEBUG:
-                print("Failed to receive heartbeat reply: %s" % str(ex))
+            logging.info(f"Failed to receive heartbeat reply: {ex}")
             _close_socket(csock)
             csock = None
             continue
 
         if not cnt:
-            if DEBUG:
-                print("Heartbeat connection closed by remote")
+            logging.info("Heartbeat connection closed by remote")
             _close_socket(csock)
             csock = None
             continue
@@ -320,37 +323,30 @@ if __name__ == "__main__":
         t = None
 
         rem_state: str = cnt.decode()
-        if DEBUG:
-            print("Remote state: %s  My state: %s" % (rem_state, myState))
+        logging.debug("Remote state: {rem_state}, My state: {myState}")
 
         # Re-election needed when both nodes agree on no clear Primary, or
         # when both claim Primary (split-brain).
         both_primary = rem_state == "P" and myState == "P"
         neither_primary = rem_state != "P" and myState != "P"
         if both_primary or neither_primary:
-            if DEBUG:
-                print(
-                    "Re-election triggered (both=%s neither=%s)"
-                    % (both_primary, neither_primary)
-                )
+            logging.info(
+                f"Re-election triggered (both={both_primary}, neither={neither_primary}"
+            )
             try:
                 csock.sendall(b"r")
                 remrand: int = ord(csock.recv(1))
                 myrand: int = int(random() * 10)
-                if DEBUG:
-                    print("MyRand=%d  RemoteRand=%d" % (myrand, remrand))
+                logging.debug(f"MyRand={myrand}, RemoteRand={remrand}")
                 if myrand >= remrand:
-                    if DEBUG:
-                        print("Elected Primary")
+                    logging.info("Elected Primary")
                     myState = "P"
                     csock.sendall(b"S")
                 else:
-                    if DEBUG:
-                        print("Elected Secondary")
+                    logging.info("Elected Secondary")
                     myState = "S"
                     csock.sendall(b"P")
             except Exception as ex:
-                if DEBUG:
-                    print("Re-election failed: %s" % str(ex))
+                logging.error(f"Re-election failed: {ex}")
                 _close_socket(csock)
                 csock = None

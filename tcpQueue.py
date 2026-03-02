@@ -89,6 +89,7 @@ if __name__ == '__main__':
         myQ.sendToProducer(result)
 """
 
+import logging
 import pickle
 import socket
 import syslog
@@ -129,12 +130,7 @@ def logger(msg: Any, SYSLOGID: str = "pyTCPQueue") -> None:
     # Capture the log string before acquiring the lock so the lock is held only
     # for the minimal critical section (the print/syslog call itself).
     with logLock:
-        if DEBUG:
-            print("%s: %s" % (SYSLOGID, msg_str))
-        else:
-            syslog.openlog(SYSLOGID)
-            syslog.syslog(msg_str)
-            syslog.closelog()
+        logging.debug("%s: %s" % (SYSLOGID, msg_str))
 
 
 def manageWorkers() -> None:
@@ -353,12 +349,12 @@ class myQueue:
                 try:
                     obj.clear()
                 except Exception as ex:
-                    print("Unable to clear dictionary %s: %s" % (name, ex))
+                    logging.error(f"Unable to clear dictionary {name}: {ex}")
             elif isinstance(obj, list):
                 try:
                     obj.clear()
                 except Exception as ex:
-                    print("Unable to clear list %s: %s" % (name, ex))
+                    logging.error(f"Unable to clear list {name}: {ex}")
 
     def getConsumer(self) -> Any:
         """Attempts to get the next entry from the Consumer queue.

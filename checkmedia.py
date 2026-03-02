@@ -13,9 +13,7 @@ from typing import Optional
 
 tlock = threading.Lock()
 tqueue: queue.Queue[str] = queue.Queue()
-NUMTHREADS: int = max(
-    2, multiprocessing.cpu_count() // 2
-)
+NUMTHREADS: int = max(2, multiprocessing.cpu_count() // 2)
 RSIZE: int = 1024 * 1024
 
 # Type alias for the 4-element fstat list: [size, atime, mtime, ctime]
