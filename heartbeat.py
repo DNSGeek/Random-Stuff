@@ -25,7 +25,7 @@ import subprocess
 import threading
 import time
 from random import random
-from sys import argv, exit
+from sys import exit
 from types import FrameType
 from typing import Optional
 
@@ -69,11 +69,11 @@ def checkForServer(processname: str = "my_server.py") -> None:
         )
         running = bool(result.stdout.strip())
     except Exception as ex:
-        logging.debug(f"Unable to check for server process: {ex}")
+        logging.warning(f"Unable to check for server process: {ex}")
         myState = "S"
         return
     if not running:
-        logging.debug(f"{processname} not found — demoting to Secondary")
+        logging.info(f"{processname} not found — demoting to Secondary")
         myState = "S"
 
 
@@ -149,11 +149,11 @@ def clientThread(client_sock: socket.socket) -> None:
             try:
                 cnt: bytes = client_sock.recv(1)
             except Exception as ex:
-                logging.debug(f"Error receiving in clientThread: {ex}")
+                logging.warning(f"Error receiving in clientThread: {ex}")
                 return
 
             if not cnt:
-                logging.debug("Client disconnected cleanly")
+                logging.info("Client disconnected cleanly")
                 return
 
             logging.debug(f"Thread received {cnt!r}")
@@ -163,21 +163,21 @@ def clientThread(client_sock: socket.socket) -> None:
                     client_sock.sendall(myState.encode())
                     logging.debug(f"Sent state: {myState}")
                 except Exception as ex:
-                    logging.debug(f"Error sending state: {ex}")
+                    logging.warning(f"Error sending state: {ex}")
                     return
 
             elif cnt == b"r":
                 try:
                     client_sock.sendall(bytes([int(random() * 10)]))
                 except Exception as ex:
-                    logging.debug(f"Error sending re-election byte: {ex}")
+                    logging.warning(f"Error sending re-election byte: {ex}")
                     return
 
             elif cnt in (b"P", b"S"):
                 myState = cnt.decode()
 
             else:
-                logging.debug(f"Unknown command {cnt!r} — closing connection")
+                logging.error(f"Unknown command {cnt!r} — closing connection")
                 return
     finally:
         _close_socket(client_sock)
@@ -189,7 +189,7 @@ def serverThread(ssock: socket.socket) -> None:
         try:
             client_sock, _sockname = ssock.accept()
         except Exception as ex:
-            logging.debug(f"Accept failed: {ex}")
+            logging.warning(f"Accept failed: {ex}")
             return
         client_sock.settimeout(5.0)
         client_sock.setblocking(True)
