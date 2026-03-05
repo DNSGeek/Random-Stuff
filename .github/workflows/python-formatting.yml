@@ -1,0 +1,70 @@
+name: Python Code Formatting
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+    paths:
+      - '**.py'
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
+    paths:
+      - '**.py'
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install formatting tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install black isort ssort
+      
+      - name: Run ssort
+        run: |
+          ssort **/*.py
+        continue-on-error: false
+      
+      - name: Run isort
+        run: |
+          isort .
+        continue-on-error: false
+      
+      - name: Run black
+        run: |
+          black .
+        continue-on-error: false
+      
+      - name: Check for changes
+        id: verify_diff
+        run: |
+          git diff --quiet . || echo "changed=true" >> $GITHUB_OUTPUT
+      
+      - name: Commit and push changes
+        if: steps.verify_diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "style: auto-format Python code with black, isort, and ssort"
+          git push
