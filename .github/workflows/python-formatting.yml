@@ -52,7 +52,7 @@ jobs:
       
       - name: Run black
         run: |
-          black .
+          black -l 79 .
         continue-on-error: false
       
       - name: Check for changes
