@@ -87,15 +87,10 @@ class ForbiddenDelight(object):
         shuffle(self.things)
         return (
             "Your forbidden delight -- for only %d gold coins -- involves a %s, %s and a %s."
-            % (
-                randint(100, 1000),
-                self.beasts[0],
-                self.things[0],
-                self.beasts[1],
-            )
+            % ( randint(100, 1000), self.beasts[0], self.things[0], self.beasts[1],)
         )
 
 
 if __name__ == "__main__":
     foo: ForbiddenDelight = ForbiddenDelight()
-    print(foo.Delight())
+    print (foo.Delight())
