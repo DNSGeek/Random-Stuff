@@ -57,9 +57,7 @@ def openDB(
     dbfile: str = "/var/tmp/media.db",
 ) -> tuple[sqlite3.Connection, sqlite3.Cursor]:
     try:
-        conn: sqlite3.Connection = sqlite3.connect(
-            dbfile, check_same_thread=False
-        )
+        conn: sqlite3.Connection = sqlite3.connect(dbfile, check_same_thread=False)
         cur: sqlite3.Cursor = conn.cursor()
         conn.text_factory = str
         cur.executescript(
@@ -181,15 +179,11 @@ def computeHash(path: str) -> str:
     return ""
 
 
-def compareStats(
-    path: str, atime: int, mtime: int, ctime: int, size: int
-) -> bool:
+def compareStats(path: str, atime: int, mtime: int, ctime: int, size: int) -> bool:
     fs: FStat = getFStat(path)
     if fs[1] == 0:
         return False
-    return (
-        fs[0] == size and fs[1] == atime and fs[2] == mtime and fs[3] == ctime
-    )
+    return fs[0] == size and fs[1] == atime and fs[2] == mtime and fs[3] == ctime
 
 
 def hashThreads(cur: sqlite3.Cursor, paths: list[str]) -> None:
@@ -205,9 +199,7 @@ def hashThreads(cur: sqlite3.Cursor, paths: list[str]) -> None:
         if dbhash is None:
             fhash: str = computeHash(fullpath)
             if fhash:
-                batch.append(
-                    (fullpath, fhash, fstat[1], fstat[2], fstat[3], fstat[0])
-                )
+                batch.append((fullpath, fhash, fstat[1], fstat[2], fstat[3], fstat[0]))
             continue
 
         # Skip if mtime, ctime, and size all match — file hasn't changed
@@ -216,9 +208,7 @@ def hashThreads(cur: sqlite3.Cursor, paths: list[str]) -> None:
 
         fhash = computeHash(fullpath)
         if fhash and fhash != dbhash:
-            batch.append(
-                (fullpath, fhash, fstat[1], fstat[2], fstat[3], fstat[0])
-            )
+            batch.append((fullpath, fhash, fstat[1], fstat[2], fstat[3], fstat[0]))
 
     flushDB(cur, batch, [])
 

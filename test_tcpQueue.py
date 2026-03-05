@@ -647,8 +647,7 @@ class TestConcurrentAccess(unittest.TestCase):
     def test_concurrent_sendToConsumer(self):
         n = 200
         threads = [
-            threading.Thread(target=self.q.sendToConsumer, args=(i,))
-            for i in range(n)
+            threading.Thread(target=self.q.sendToConsumer, args=(i,)) for i in range(n)
         ]
         for t in threads:
             t.start()
@@ -675,9 +674,7 @@ class TestConcurrentAccess(unittest.TestCase):
         for t in threads:
             t.join()
 
-        self.assertEqual(
-            errors, [], "Exceptions during concurrent clearQueues"
-        )
+        self.assertEqual(errors, [], "Exceptions during concurrent clearQueues")
 
 
 if __name__ == "__main__":

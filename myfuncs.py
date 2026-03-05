@@ -21,9 +21,7 @@ def timeit(some_func: F) -> F:
         t1: float = time.perf_counter()
         result: Any = some_func(*args, **kwargs)
         diff: float = time.perf_counter() - t1
-        logging.debug(
-            "%s completed in %.5f seconds.", some_func.__name__, diff
-        )
+        logging.debug("%s completed in %.5f seconds.", some_func.__name__, diff)
         return result
 
     return wrapper  # type: ignore[return-value]
@@ -81,9 +79,7 @@ def daemonize() -> None:
         pid = os.fork()  # Second fork: prevent re-acquiring a terminal
         if pid != 0:
             os._exit(0)  # Exit first child; grandchild continues
-        os.umask(
-            0
-        )  # Clear umask so daemon can create files with any permissions
+        os.umask(0)  # Clear umask so daemon can create files with any permissions
     else:
         os._exit(0)  # Exit the original parent
 
@@ -99,9 +95,7 @@ def daemonize() -> None:
         except OSError:
             pass  # fd wasn't open; that's fine
 
-    null_fd: int = os.open(
-        os.devnull, os.O_RDWR
-    )  # Opens as fd 0 (stdin → /dev/null)
+    null_fd: int = os.open(os.devnull, os.O_RDWR)  # Opens as fd 0 (stdin → /dev/null)
     os.dup2(null_fd, 1)  # stdout → /dev/null
     os.dup2(null_fd, 2)  # stderr → /dev/null
 

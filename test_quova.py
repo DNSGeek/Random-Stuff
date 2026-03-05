@@ -79,9 +79,7 @@ class TestDecodeQuova(unittest.TestCase):
         self.assertEqual(quova.decode_quova(packet), "1.2.3.4")
 
     def test_exactly_four_bytes(self) -> None:
-        self.assertEqual(
-            quova.decode_quova(bytes([192, 168, 0, 1])), "192.168.0.1"
-        )
+        self.assertEqual(quova.decode_quova(bytes([192, 168, 0, 1])), "192.168.0.1")
 
     def test_too_short_returns_default(self) -> None:
         self.assertEqual(quova.decode_quova(b"\x01\x02\x03"), quova.DEFAULT_IP)
@@ -93,9 +91,7 @@ class TestDecodeQuova(unittest.TestCase):
         self.assertEqual(quova.decode_quova(b"\x00\x00\x00\x00"), "0.0.0.0")
 
     def test_all_255(self) -> None:
-        self.assertEqual(
-            quova.decode_quova(b"\xff\xff\xff\xff"), "255.255.255.255"
-        )
+        self.assertEqual(quova.decode_quova(b"\xff\xff\xff\xff"), "255.255.255.255")
 
 
 # ---------------------------------------------------------------------------
@@ -266,18 +262,14 @@ class TestIntegration(unittest.TestCase):
             with patch("quova.pygeoip.GeoIP", return_value=self.geoip_mock):
                 quova.process_connection(client)
 
-        t: threading.Thread = threading.Thread(
-            target=_accept_and_handle, daemon=True
-        )
+        t: threading.Thread = threading.Thread(target=_accept_and_handle, daemon=True)
         t.start()
 
     def tearDown(self) -> None:
         self.listen_sock.close()
 
     def test_full_round_trip(self) -> None:
-        with socket.create_connection(
-            ("127.0.0.1", self.port), timeout=2
-        ) as s:
+        with socket.create_connection(("127.0.0.1", self.port), timeout=2) as s:
             packet: bytes = b"\x00" * 10 + bytes([8, 8, 8, 8])
             s.sendall(packet)
             response: bytes = s.recv(4096)
@@ -285,9 +277,7 @@ class TestIntegration(unittest.TestCase):
         self.assertIn(b"kansas", response)
 
     def test_stats_round_trip(self) -> None:
-        with socket.create_connection(
-            ("127.0.0.1", self.port), timeout=2
-        ) as s:
+        with socket.create_connection(("127.0.0.1", self.port), timeout=2) as s:
             s.sendall(b"stats-padded")
             response: bytes = s.recv(64)
         self.assertIn(b"0", response)  # statcounter starts at 0

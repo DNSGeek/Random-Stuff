@@ -120,9 +120,7 @@ class TestCheckForServer(unittest.TestCase):
 
     def _run_with_output(self, stdout: bytes):
         """Patch subprocess.run to simulate ps output."""
-        result = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=stdout
-        )
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout)
         with patch("heartbeat.subprocess.run", return_value=result):
             heartbeat.checkForServer("fake_process")
 
@@ -193,9 +191,7 @@ class TestManageWorkers(unittest.TestCase):
                 pass
 
         remaining = self._drain_queue()
-        self.assertEqual(
-            remaining, [], "Finished thread should have been reaped"
-        )
+        self.assertEqual(remaining, [], "Finished thread should have been reaped")
 
     def test_keeps_live_threads(self):
         event = threading.Event()
@@ -257,12 +253,8 @@ class TestClientThread(unittest.TestCase):
         heartbeat.DEBUG = False
         _reset_state()
 
-    def _start_client_thread(
-        self, server_conn: socket.socket
-    ) -> threading.Thread:
-        t = threading.Thread(
-            target=heartbeat.clientThread, args=(server_conn,)
-        )
+    def _start_client_thread(self, server_conn: socket.socket) -> threading.Thread:
+        t = threading.Thread(target=heartbeat.clientThread, args=(server_conn,))
         t.daemon = True
         t.start()
         return t
@@ -367,9 +359,7 @@ class TestClientThread(unittest.TestCase):
         t = self._start_client_thread(srv)
         cli.close()
         t.join(2.0)
-        self.assertFalse(
-            t.is_alive(), "Thread should have exited after disconnect"
-        )
+        self.assertFalse(t.is_alive(), "Thread should have exited after disconnect")
 
     # --- Unknown command ---
 
@@ -540,9 +530,7 @@ class TestReElectionLogic(unittest.TestCase):
                     heartbeat.myState = "S"
                     mock_sock.sendall(b"P")
 
-        return heartbeat.myState, [
-            c[0][0] for c in mock_sock.sendall.call_args_list
-        ]
+        return heartbeat.myState, [c[0][0] for c in mock_sock.sendall.call_args_list]
 
     def test_higher_rand_wins_primary(self):
         final_state, sent = self._run_election(
@@ -624,9 +612,7 @@ class TestCountdownTimer(unittest.TestCase):
         t.start()
         t.cancel()
         time.sleep(0.2)
-        self.assertEqual(
-            heartbeat.myState, "S", "Cancelled timer should not fire"
-        )
+        self.assertEqual(heartbeat.myState, "S", "Cancelled timer should not fire")
 
 
 # ============================================================================

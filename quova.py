@@ -73,9 +73,7 @@ def _configure_logging(use_syslog: bool = True) -> None:
         handler = SysLogHandler(address="/dev/log")
     else:
         handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(
-        logging.Formatter("%(name)s: %(levelname)s %(message)s")
-    )
+    handler.setFormatter(logging.Formatter("%(name)s: %(levelname)s %(message)s"))
     log.addHandler(handler)
 
 
@@ -139,9 +137,7 @@ def decode_quova(data: bytes) -> str:
     Returns a dotted-decimal string, or DEFAULT_IP on any error.
     """
     if len(data) < 4:
-        log.warning(
-            "Packet too short to contain an IP address (%d bytes)", len(data)
-        )
+        log.warning("Packet too short to contain an IP address (%d bytes)", len(data))
         return DEFAULT_IP
     try:
         return "%d.%d.%d.%d" % (data[-4], data[-3], data[-2], data[-1])
@@ -170,9 +166,7 @@ def encode_quova(ipinfo: GeoIPRecord, ip: str) -> bytes:
         return bytes(buf)
 
     except Exception:
-        log.exception(
-            "Error generating Quova packet for IP %s; ipinfo=%s", ip, ipinfo
-        )
+        log.exception("Error generating Quova packet for IP %s; ipinfo=%s", ip, ipinfo)
         return _ERROR_RESPONSE
 
 
@@ -264,9 +258,7 @@ def server_loop(listen_sock: socket.socket) -> None:
 
 def start_worker(listen_sock: socket.socket) -> Thread:
     """Spawn and return a new daemon thread running server_loop."""
-    worker: Thread = Thread(
-        target=server_loop, args=(listen_sock,), daemon=True
-    )
+    worker: Thread = Thread(target=server_loop, args=(listen_sock,), daemon=True)
     worker.start()
     return worker
 
@@ -286,9 +278,7 @@ def run(daemonize: bool = True) -> None:
 
     def _main() -> None:
         listen_sock: socket.socket = sock_setup()
-        workers: list[Thread] = [
-            start_worker(listen_sock) for _ in range(WORKER_MAX)
-        ]
+        workers: list[Thread] = [start_worker(listen_sock) for _ in range(WORKER_MAX)]
         log.info("Started the Python Quova emulator on port %d.", PORT)
 
         while True:

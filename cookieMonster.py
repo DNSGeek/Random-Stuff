@@ -34,9 +34,7 @@ def _split_bytes(data: bytes, n: int) -> list[bytes]:
     return chunks
 
 
-def _interleave(
-    key_segments: list[str], data_segments: list[str], seed: int
-) -> str:
+def _interleave(key_segments: list[str], data_segments: list[str], seed: int) -> str:
     """Randomly interleave key_segments into data_segments using a seeded RNG
     so the positions are deterministic but non-obvious.
 
@@ -82,15 +80,11 @@ def _deinterleave(cookie: str, seed: int) -> tuple[bytes, bytes]:
     data_parts: list[bytes] = []
     for i, seg in enumerate(segments):
         if not seg or seg[0] not in ("k", "d"):
-            raise ValueError(
-                f"Segment {i} has invalid type prefix: {seg[:5]!r}"
-            )
+            raise ValueError(f"Segment {i} has invalid type prefix: {seg[:5]!r}")
         payload: bytes = seg[1:].encode("utf-8")
         if i in key_positions:
             if seg[0] != "k":
-                raise ValueError(
-                    f"Segment {i} expected key prefix 'k', got {seg[0]!r}"
-                )
+                raise ValueError(f"Segment {i} expected key prefix 'k', got {seg[0]!r}")
             key_parts.append(b85decode(payload))
         else:
             if seg[0] != "d":
@@ -178,9 +172,7 @@ def eatCookie(cookie: str) -> Optional[Any]:
         data_parts: list[bytes] = []
         for i, seg in enumerate(segments):
             if not seg or seg[0] not in ("k", "d"):
-                raise ValueError(
-                    f"Segment {i} has invalid type prefix: {seg[:5]!r}"
-                )
+                raise ValueError(f"Segment {i} has invalid type prefix: {seg[:5]!r}")
             payload: bytes = seg[1:].encode("utf-8")
             if seg[0] == "k":
                 key_parts.append(b85decode(payload))
@@ -202,16 +194,12 @@ def eatCookie(cookie: str) -> Optional[Any]:
         seed: int = int(sha256(cdata).hexdigest(), 16)
         total: int = len(segments)
         rng: random.Random = random.Random(seed)
-        expected_key_positions: set[int] = set(
-            rng.sample(range(total), _KEY_SEGMENTS)
-        )
+        expected_key_positions: set[int] = set(rng.sample(range(total), _KEY_SEGMENTS))
         actual_key_positions: set[int] = {
             i for i, seg in enumerate(segments) if seg[0] == "k"
         }
         if expected_key_positions != actual_key_positions:
-            warning(
-                "Cookie segment positions are inconsistent — possible tampering."
-            )
+            warning("Cookie segment positions are inconsistent — possible tampering.")
             return None
 
         f = Fernet(key)
@@ -315,9 +303,7 @@ class TestCookies(unittest.TestCase):
         # Flip a character in the middle of the cookie.
         mid: int = len(cookie) // 2
         tampered: str = (
-            cookie[:mid]
-            + ("X" if cookie[mid] != "X" else "Y")
-            + cookie[mid + 1 :]
+            cookie[:mid] + ("X" if cookie[mid] != "X" else "Y") + cookie[mid + 1 :]
         )
         self.assertIsNone(eatCookie(tampered))
 

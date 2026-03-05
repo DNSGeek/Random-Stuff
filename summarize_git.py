@@ -37,9 +37,7 @@ def pull_readme(base_dir: str, dir_name: str) -> str:
         if entry.lower() == "readme.md":
             readme_path: str = os.path.join(full_dir, entry)
             try:
-                with open(
-                    readme_path, "r", encoding="utf-8", errors="replace"
-                ) as f:
+                with open(readme_path, "r", encoding="utf-8", errors="replace") as f:
                     return f.read()
             except OSError:
                 return ""

@@ -191,9 +191,7 @@ def _read_framed_message(sock: socket.socket) -> Optional[bytes]:
         header += byte
     else:
         # Consumed 10 bytes without finding a colon — malformed frame.
-        raise ValueError(
-            "Frame header too long or missing colon: %s" % header[:9]
-        )
+        raise ValueError("Frame header too long or missing colon: %s" % header[:9])
 
     if not header:
         raise ValueError("Empty frame header")
@@ -227,10 +225,7 @@ def serverThread(client_sock: socket.socket) -> None:
             try:
                 sockData: Optional[bytes] = _read_framed_message(client_sock)
             except ValueError as ex:
-                logger(
-                    "Malformed frame received, closing connection: %s"
-                    % str(ex)
-                )
+                logger("Malformed frame received, closing connection: %s" % str(ex))
                 return
 
             if sockData is None:
@@ -242,20 +237,12 @@ def serverThread(client_sock: socket.socket) -> None:
 
             if cmd == b"c":
                 with consumerLock:
-                    data = (
-                        consumerQueue.pop()
-                        if consumerQueue
-                        else _EMPTY_PAYLOAD
-                    )
+                    data = consumerQueue.pop() if consumerQueue else _EMPTY_PAYLOAD
                 client_sock.sendall(_make_frame(data))
 
             elif cmd == b"p":
                 with prodLock:
-                    data = (
-                        producerQueue.pop()
-                        if producerQueue
-                        else _EMPTY_PAYLOAD
-                    )
+                    data = producerQueue.pop() if producerQueue else _EMPTY_PAYLOAD
                 client_sock.sendall(_make_frame(data))
 
             else:
@@ -293,9 +280,7 @@ class myQueue:
         Uses 127.0.0.1 if no host specified, port 49152 if no port specified.
         Raises ValueError for invalid host or port."""
         if not isinstance(host, str):
-            raise ValueError(
-                "host must be a string, got %s" % type(host).__name__
-            )
+            raise ValueError("host must be a string, got %s" % type(host).__name__)
         if not isinstance(port, int) or not (1 <= port <= 65535):
             raise ValueError(
                 "port must be an integer between 1 and 65535, got %r" % port
@@ -401,8 +386,7 @@ class myQueue:
             except Exception as ex:
                 self.close()
                 logger(
-                    "Unable to send data (attempt %d/3): %s"
-                    % (attempt + 1, str(ex))
+                    "Unable to send data (attempt %d/3): %s" % (attempt + 1, str(ex))
                 )
                 sleep(random() * 2)
 

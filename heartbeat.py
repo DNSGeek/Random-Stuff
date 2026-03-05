@@ -245,16 +245,12 @@ if __name__ == "__main__":
 
     # Start the local heartbeat listener.
     try:
-        ssock: socket.socket = socket.socket(
-            socket.AF_INET, socket.SOCK_STREAM
-        )
+        ssock: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         ssock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         ssock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         ssock.bind(HBaddr)
         ssock.listen(128)
-        socketThread = threading.Thread(
-            target=serverThread, args=(ssock,), daemon=True
-        )
+        socketThread = threading.Thread(target=serverThread, args=(ssock,), daemon=True)
         socketThread.start()
     except Exception as ex:
         logging.critical(f"Unable to start heartbeat server: {ex}")

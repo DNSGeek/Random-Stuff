@@ -177,9 +177,7 @@ def displayBall(bx: int, by: int, color: int) -> None:
 
 
 @micropython.native
-def detectCollision(
-    bx: int, by: int, p1c: Player, p2c: Player, lr: bool
-) -> bool:
+def detectCollision(bx: int, by: int, p1c: Player, p2c: Player, lr: bool) -> bool:
     if bx == 20:
         if p1c.collision(by):
             lr = not lr
@@ -209,9 +207,7 @@ def showQRCode(lx: ADC) -> None:
             xp: int = qx * pixel_size
             yp: int = qy * pixel_size
             display.set_pen(255 if borw else 0)
-            display.rectangle(
-                xp + offset_x, yp + offset_y, pixel_size, pixel_size
-            )
+            display.rectangle(xp + offset_x, yp + offset_y, pixel_size, pixel_size)
     display.set_backlight(1.0)
     display.update()
     time.sleep(10)

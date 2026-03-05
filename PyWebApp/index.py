@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 
 # Import the CherryPy modules.
 import cherrypy
+
 # Import the Django modules.
 import django
 from django.conf import settings
@@ -95,9 +96,7 @@ class Root:
     # Every function besides index will get cookie_work called automagically
     def index(self):
         # Initialize the cookie
-        encCookie = makeCookie(
-            {"my": "data", "__cookieTime__": int(time.time())}
-        )
+        encCookie = makeCookie({"my": "data", "__cookieTime__": int(time.time())})
         cherrypy.response.cookie[myApp] = encCookie
         return render(
             "index.html",
