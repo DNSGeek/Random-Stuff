@@ -1127,13 +1127,10 @@ int ReleaseGrain(player *Me)
     zp /= 10.0;
     if (zp > 0.0) zp += (3.0 - (double)Me->Justice);
 
-    z += (float)(zp / 10.0);
-
     if (HowMuch < (Me->GrainDemand - 1)) {
         x  = ((float)Me->GrainDemand - (float)HowMuch) /
               (float)Me->GrainDemand * 100.0f - 9.0f;
         xp = (double)x;
-        if (x > 65.0f) x = 65.0f;
 
         SerfsProcreating(Me, 3.0f);
         SerfsDecomposing(Me, (float)xp + 8.0f);
