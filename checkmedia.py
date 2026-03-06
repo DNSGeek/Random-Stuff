@@ -2,6 +2,7 @@
 
 import fnmatch
 import hashlib
+import logging
 import multiprocessing
 import os
 import queue
@@ -36,7 +37,7 @@ InsertRow = tuple[str, str, int, int, int, int]
 
 def logger(msg: str) -> None:
     with tlock:
-        print(msg)
+        logging.info(msg)
 
 
 def getFileList(rundir: str) -> list[str]:
@@ -214,7 +215,11 @@ def hashThreads(cur: sqlite3.Cursor, paths: list[str]) -> None:
 
 
 if __name__ == "__main__":
-    print("Using %d CPUs." % NUMTHREADS)
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)s:\t%(message)s",
+        level=logging.INFO,
+    )
+    logger("Using %d CPUs." % NUMTHREADS)
     conn, cur = openDB()
     if conn is None:
         exit(-1)
@@ -241,6 +246,6 @@ if __name__ == "__main__":
     while True:
         try:
             path = tqueue.get_nowait()
-            print("File %s updated" % path)
+            logger("File %s updated" % path)
         except queue.Empty:
             break
