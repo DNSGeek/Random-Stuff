@@ -778,7 +778,7 @@ void InitializePlayer(player *Me, int year, int city, int level,
         strncpy(Me->Title, FemaleTitles[0], sizeof(Me->Title) - 1);
     Me->Title[sizeof(Me->Title) - 1] = '\0';
 
-    if (city == 6) strncpy(Me->Title, "Baron", sizeof(Me->Title) - 1);
+   if (city == 6) strncpy(Me->Title, "Baron", sizeof(Me->Title) - 1);
 
     Me->Treasury    = 1000;
     Me->WhichPlayer = city;
