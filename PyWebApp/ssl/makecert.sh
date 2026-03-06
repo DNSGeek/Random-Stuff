@@ -1,7 +1,5 @@
 #!/bin/bash
 
-NAME=`/bin/uname -n`
-
 /bin/rm -f server.*
 /usr/bin/openssl genrsa -des3 -out server.key
 /usr/bin/openssl req -new -key server.key -out server.csr
