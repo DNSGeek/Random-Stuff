@@ -92,7 +92,6 @@ if __name__ == '__main__':
 import logging
 import pickle
 import socket
-import syslog
 import threading
 import zlib
 from collections import deque
