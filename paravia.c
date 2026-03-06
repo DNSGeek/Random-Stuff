@@ -19,7 +19,7 @@ as published by the Free Software Foundation; either version 2
 of the License, or (at your option) any later version.
 */
 
- #include <stdio.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <stdlib.h>
