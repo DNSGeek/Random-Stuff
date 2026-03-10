@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# ruff: noqa: E402
 # The MIT License (MIT)
 #
 # Copyright (c) 2015-2021 Steven Fernandez
@@ -51,15 +52,6 @@ enabled however it does not do pathname completion
 """
 
 
-# Fix for Issue #5
-# - Exit if being called from within ipython
-try:
-    import sys
-
-    __IPYTHON__ and sys.exit(0)  # type: ignore
-except NameError:
-    pass
-
 import ast
 import asyncio
 import atexit
@@ -77,33 +69,38 @@ import rlcompleter
 import shlex
 import signal
 import subprocess
+import sys
 import threading
 import warnings
 import webbrowser
 from code import InteractiveConsole
 from functools import cached_property, lru_cache, partial
-from itertools import chain
 from tempfile import NamedTemporaryFile
 from types import FunctionType, SimpleNamespace
 
 __version__ = "0.9.0"
 
 # Pre-compiled regex constants — kept at module level to avoid recompilation
-_RE_NAME_ERROR    = re.compile(r"'(\w+)' is not defined")
-_RE_DICT_KEYS     = re.compile(r'([\'\("]+(.*?[\'\)"]: ))+?')
+_RE_NAME_ERROR = re.compile(r"'(\w+)' is not defined")
+_RE_DICT_KEYS = re.compile(r'([\'\("]+(.*?[\'\)"]: ))+?')
 
 
 @lru_cache(None)
 def _pkg_contents(pkg: str) -> list[str]:
     """Return sub-module names for *pkg*. Cached at module level so the
-    lru_cache key is just the package name string, not an unhashable instance."""
+    lru_cache key is just the package name string, not an unhashable instance.
+    """
     spec = importlib.util.find_spec(pkg)
     if spec is None:
         return []
-    locs = [spec.origin] if not spec.parent else spec.submodule_search_locations
+    locs = (
+        [spec.origin] if not spec.parent else spec.submodule_search_locations
+    )
     return [
         item.name
-        for item in pkgutil.walk_packages(locs, f"{pkg}.", onerror=lambda _: None)
+        for item in pkgutil.walk_packages(
+            locs, f"{pkg}.", onerror=lambda _: None
+        )
     ]
 
 
@@ -241,13 +238,17 @@ class ImprovedCompleter(rlcompleter.Completer):
                 # from pkg.sub import na<tab>
                 match_text = ".".join((namespace, text))
                 if matches := self.startswith_filter(
-                    match_text, self.pkg_contents(pkg), striptext=f"{namespace}."
+                    match_text,
+                    self.pkg_contents(pkg),
+                    striptext=f"{namespace}.",
                 ):
                     return matches
 
             # from module import na<ta>
             mod = importlib.import_module(namespace)
-            return self.startswith_filter(text, getattr(mod, "__all__", dir(mod)))
+            return self.startswith_filter(
+                text, getattr(mod, "__all__", dir(mod))
+            )
 
     def complete(self, text, state, line=None):
         if not line:
@@ -341,6 +342,34 @@ class ImprovedConsole(InteractiveConsole):
     config declaration at the top of this file. Make this your own !
     """
 
+    def runcode_sync(self, code):
+        """Wrapper around super().runcode() to enable auto-importing"""
+
+        if not config.ENABLE_AUTO_IMPORTS:
+            return super().runcode(code)
+
+        try:
+            exec(code, self.locals)
+        except NameError as err:
+            if match := _RE_NAME_ERROR.search(err.args[0]):
+                name = match.group(1)
+                if name in self.completer.modlist:
+                    mod = importlib.import_module(name)
+                    print(
+                        grey(
+                            f"# imported undefined module: {name}", bold=False
+                        )
+                    )
+                    self.locals[name] = mod
+                    return self.runcode(code)
+            self.showtraceback()
+        except SystemExit:
+            raise
+        except Exception:
+            self.showtraceback()
+
+    runcode = runcode_sync
+
     def __init__(self, *args, **kwargs):
         self.session_history = []  # This holds the last executed statements
         self.buffer = []  # This holds the statement to be executed
@@ -420,7 +449,9 @@ class ImprovedConsole(InteractiveConsole):
         def append_history(len_at_start):
             current_len = readline.get_current_history_length()
             if _has_append_history:
-                readline.append_history_file(current_len - len_at_start, config.HISTFILE)
+                readline.append_history_file(
+                    current_len - len_at_start, config.HISTFILE
+                )
             else:
                 readline.write_history_file(config.HISTFILE)
 
@@ -454,13 +485,17 @@ class ImprovedConsole(InteractiveConsole):
         ssh connection.
         """
         prompt_color = yellow
-        sys.ps1 = prompt_color(">=> " if nested else ">>> ", readline_workaround=True)
+        sys.ps1 = prompt_color(
+            ">=> " if nested else ">>> ", readline_workaround=True
+        )
         sys.ps2 = red("... ", readline_workaround=True)
         # - if we are over a remote connection, modify the ps1
         if os.getenv("SSH_CONNECTION"):
             ssh_parts = os.getenv("SSH_CONNECTION", "").split()
             this_host = ssh_parts[2] if len(ssh_parts) >= 3 else "remote"
-            sys.ps1 = prompt_color(f"[{this_host}]>>> ", readline_workaround=True)
+            sys.ps1 = prompt_color(
+                f"[{this_host}]>>> ", readline_workaround=True
+            )
             sys.ps2 = red(f"[{this_host}]... ", readline_workaround=True)
 
     def init_pprint(self):
@@ -475,7 +510,8 @@ class ImprovedConsole(InteractiveConsole):
                 except AttributeError:
                     try:
                         rows, cols = map(
-                            int, subprocess.check_output(["stty", "size"]).split()
+                            int,
+                            subprocess.check_output(["stty", "size"]).split(),
                         )
                     except Exception:
                         cols = 80
@@ -488,6 +524,19 @@ class ImprovedConsole(InteractiveConsole):
             self.locals["_"] = value
 
         sys.displayhook = pprint_callback
+
+    def _stop_asyncio_loop(self):
+        self.loop.stop()
+        del self.locals["repl_future"]
+        del self.locals["repl_future_interrupted"]
+        self.runcode = self.runcode_sync
+        self.loop = None
+        self.writeline(
+            grey(
+                "Stopped the asyncio loop. "
+                f"Use {config.TOGGLE_ASYNCIO_LOOP_CMD} to restart it."
+            )
+        )
 
     def _init_nested_repl(self):
         self.loop = asyncio.new_event_loop()
@@ -539,19 +588,6 @@ class ImprovedConsole(InteractiveConsole):
                     repl_future.cancel()
                     self.locals["repl_future_interrupted"] = True
 
-    def _stop_asyncio_loop(self):
-        self.loop.stop()
-        del self.locals["repl_future"]
-        del self.locals["repl_future_interrupted"]
-        self.runcode = self.runcode_sync
-        self.loop = None
-        self.writeline(
-            grey(
-                "Stopped the asyncio loop. "
-                f"Use {config.TOGGLE_ASYNCIO_LOOP_CMD} to restart it."
-            )
-        )
-
     @_doc_to_usage
     def toggle_asyncio(self, _):
         """{config.TOGGLE_ASYNCIO_LOOP_CMD} - Starts/stops the asyncio loop
@@ -583,7 +619,9 @@ class ImprovedConsole(InteractiveConsole):
     def toggle_auto_indent(self, _):
         """{config.TOGGLE_AUTO_INDENT_CMD} - Toggles the auto-indentation behavior"""
         hook = None if config.AUTO_INDENT else self.auto_indent_hook
-        msg = "# Auto-Indent has been {}abled\n".format("en" if hook else "dis")
+        msg = "# Auto-Indent has been {}abled\n".format(
+            "en" if hook else "dis"
+        )
         config.AUTO_INDENT = bool(hook)
 
         if hook is None:
@@ -595,15 +633,6 @@ class ImprovedConsole(InteractiveConsole):
         readline.set_pre_input_hook(hook)
         print(grey(msg, bold=False))
         return ""
-
-    def raw_input(self, prompt=""):
-        """Read the input and delegate if necessary."""
-        line = super(ImprovedConsole, self).raw_input(prompt)
-        empty_lines = 3 if line else 1
-        while not config.AUTO_INDENT and empty_lines < 3:
-            line = super(ImprovedConsole, self).raw_input(prompt)
-            empty_lines += 1 if not line else 3
-        return self._cmd_handler(line)
 
     def _cmd_handler(self, line):
         if matches := self.commands_re.match(line):
@@ -645,6 +674,15 @@ class ImprovedConsole(InteractiveConsole):
             return line
         return line or ""
 
+    def raw_input(self, prompt=""):
+        """Read the input and delegate if necessary."""
+        line = super(ImprovedConsole, self).raw_input(prompt)
+        empty_lines = 3 if line else 1
+        while not config.AUTO_INDENT and empty_lines < 3:
+            line = super(ImprovedConsole, self).raw_input(prompt)
+            empty_lines += 1 if not line else 3
+        return self._cmd_handler(line)
+
     def push(self, line):
         """Wrapper around InteractiveConsole's push method for adding an
         indent on start of a block.
@@ -680,7 +718,9 @@ class ImprovedConsole(InteractiveConsole):
 
             try:
                 self.locals["repl_future"] = self.loop.create_task(coro)
-                asyncio.futures._chain_future(self.locals["repl_future"], future)
+                asyncio.futures._chain_future(
+                    self.locals["repl_future"], future
+                )
             except BaseException as exc:
                 future.set_exception(exc)
 
@@ -695,30 +735,6 @@ class ImprovedConsole(InteractiveConsole):
                 self.write("\nKeyboardInterrupt\n")
             else:
                 self.showtraceback()
-
-    def runcode_sync(self, code):
-        """Wrapper around super().runcode() to enable auto-importing"""
-
-        if not config.ENABLE_AUTO_IMPORTS:
-            return super().runcode(code)
-
-        try:
-            exec(code, self.locals)
-        except NameError as err:
-            if match := _RE_NAME_ERROR.search(err.args[0]):
-                name = match.group(1)
-                if name in self.completer.modlist:
-                    mod = importlib.import_module(name)
-                    print(grey(f"# imported undefined module: {name}", bold=False))
-                    self.locals[name] = mod
-                    return self.runcode(code)
-            self.showtraceback()
-        except SystemExit:
-            raise
-        except Exception:
-            self.showtraceback()
-
-    runcode = runcode_sync
 
     def write(self, data):
         """Write out data to stderr"""
@@ -740,7 +756,9 @@ class ImprovedConsole(InteractiveConsole):
 
     def _mktemp_buffer(self, lines):
         """Writes lines to a temp file and returns the filename."""
-        with NamedTemporaryFile(mode="w+", suffix=".py", delete=False) as tempbuf:
+        with NamedTemporaryFile(
+            mode="w+", suffix=".py", delete=False
+        ) as tempbuf:
             tempbuf.write("\n".join(lines))
         return tempbuf.name
 
@@ -788,7 +806,9 @@ class ImprovedConsole(InteractiveConsole):
                         self.resetbuffer()
 
             if not quiet:
-                self.write(cyan(f"... {stmt}", bold=(not self._skip_subsequent)))
+                self.write(
+                    cyan(f"... {stmt}", bold=(not self._skip_subsequent))
+                )
 
             if self._skip_subsequent:
                 self.session_history.append(stmt)
@@ -806,7 +826,11 @@ class ImprovedConsole(InteractiveConsole):
         (e.g. a.b.c.d.e) don't risk hitting Python's recursion limit.
         """
         parts = name.split(".")
-        obj = self.locals.get(parts[0]) if namespace is None else getattr(namespace, parts[0], None)
+        obj = (
+            self.locals.get(parts[0])
+            if namespace is None
+            else getattr(namespace, parts[0], None)
+        )
         for part in parts[1:]:
             if obj is None:
                 return None
@@ -984,7 +1008,9 @@ class ImprovedConsole(InteractiveConsole):
         retries = 2
         while retries:
             try:
-                super(ImprovedConsole, self).interact(banner=banner, exitmsg=exitmsg)
+                super(ImprovedConsole, self).interact(
+                    banner=banner, exitmsg=exitmsg
+                )
             except SystemExit:
                 # Fixes #2: exit when 'quit()' invoked
                 break
