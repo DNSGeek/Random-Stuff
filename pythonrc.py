@@ -51,6 +51,14 @@ If you have any other good ideas please feel free to submit issues/pull requests
 enabled however it does not do pathname completion
 """
 
+# - Exit if being called from within ipython
+try:
+    import sys
+
+    __IPYTHON__ and sys.exit(0)  # type: ignore
+except NameError:
+    pass
+
 
 import ast
 import asyncio
@@ -69,7 +77,6 @@ import rlcompleter
 import shlex
 import signal
 import subprocess
-import sys
 import threading
 import warnings
 import webbrowser
@@ -78,7 +85,7 @@ from functools import cached_property, lru_cache, partial
 from tempfile import NamedTemporaryFile
 from types import FunctionType, SimpleNamespace
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 
 # Pre-compiled regex constants — kept at module level to avoid recompilation
 _RE_NAME_ERROR = re.compile(r"'(\w+)' is not defined")
