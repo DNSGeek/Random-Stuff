@@ -93,14 +93,10 @@ def _pkg_contents(pkg: str) -> list[str]:
     spec = importlib.util.find_spec(pkg)
     if spec is None:
         return []
-    locs = (
-        [spec.origin] if not spec.parent else spec.submodule_search_locations
-    )
+    locs = [spec.origin] if not spec.parent else spec.submodule_search_locations
     return [
         item.name
-        for item in pkgutil.walk_packages(
-            locs, f"{pkg}.", onerror=lambda _: None
-        )
+        for item in pkgutil.walk_packages(locs, f"{pkg}.", onerror=lambda _: None)
     ]
 
 
@@ -197,9 +193,7 @@ class ImprovedCompleter(rlcompleter.Completer):
     def startswith_filter(self, text, names, striptext=None):
         if striptext:
             return [
-                name.replace(striptext, "")
-                for name in names
-                if name.startswith(text)
+                name.replace(striptext, "") for name in names if name.startswith(text)
             ]
         # Return a generator — readline pulls matches one at a time via state,
         # so we don't need to materialise the full list upfront.
@@ -246,9 +240,7 @@ class ImprovedCompleter(rlcompleter.Completer):
 
             # from module import na<ta>
             mod = importlib.import_module(namespace)
-            return self.startswith_filter(
-                text, getattr(mod, "__all__", dir(mod))
-            )
+            return self.startswith_filter(text, getattr(mod, "__all__", dir(mod)))
 
     def complete(self, text, state, line=None):
         if not line:
@@ -355,11 +347,7 @@ class ImprovedConsole(InteractiveConsole):
                 name = match.group(1)
                 if name in self.completer.modlist:
                     mod = importlib.import_module(name)
-                    print(
-                        grey(
-                            f"# imported undefined module: {name}", bold=False
-                        )
-                    )
+                    print(grey(f"# imported undefined module: {name}", bold=False))
                     self.locals[name] = mod
                     return self.runcode(code)
             self.showtraceback()
@@ -485,17 +473,13 @@ class ImprovedConsole(InteractiveConsole):
         ssh connection.
         """
         prompt_color = yellow
-        sys.ps1 = prompt_color(
-            ">=> " if nested else ">>> ", readline_workaround=True
-        )
+        sys.ps1 = prompt_color(">=> " if nested else ">>> ", readline_workaround=True)
         sys.ps2 = red("... ", readline_workaround=True)
         # - if we are over a remote connection, modify the ps1
         if os.getenv("SSH_CONNECTION"):
             ssh_parts = os.getenv("SSH_CONNECTION", "").split()
             this_host = ssh_parts[2] if len(ssh_parts) >= 3 else "remote"
-            sys.ps1 = prompt_color(
-                f"[{this_host}]>>> ", readline_workaround=True
-            )
+            sys.ps1 = prompt_color(f"[{this_host}]>>> ", readline_workaround=True)
             sys.ps2 = red(f"[{this_host}]... ", readline_workaround=True)
 
     def init_pprint(self):
@@ -619,9 +603,7 @@ class ImprovedConsole(InteractiveConsole):
     def toggle_auto_indent(self, _):
         """{config.TOGGLE_AUTO_INDENT_CMD} - Toggles the auto-indentation behavior"""
         hook = None if config.AUTO_INDENT else self.auto_indent_hook
-        msg = "# Auto-Indent has been {}abled\n".format(
-            "en" if hook else "dis"
-        )
+        msg = "# Auto-Indent has been {}abled\n".format("en" if hook else "dis")
         config.AUTO_INDENT = bool(hook)
 
         if hook is None:
@@ -718,9 +700,7 @@ class ImprovedConsole(InteractiveConsole):
 
             try:
                 self.locals["repl_future"] = self.loop.create_task(coro)
-                asyncio.futures._chain_future(
-                    self.locals["repl_future"], future
-                )
+                asyncio.futures._chain_future(self.locals["repl_future"], future)
             except BaseException as exc:
                 future.set_exception(exc)
 
@@ -756,9 +736,7 @@ class ImprovedConsole(InteractiveConsole):
 
     def _mktemp_buffer(self, lines):
         """Writes lines to a temp file and returns the filename."""
-        with NamedTemporaryFile(
-            mode="w+", suffix=".py", delete=False
-        ) as tempbuf:
+        with NamedTemporaryFile(mode="w+", suffix=".py", delete=False) as tempbuf:
             tempbuf.write("\n".join(lines))
         return tempbuf.name
 
@@ -806,9 +784,7 @@ class ImprovedConsole(InteractiveConsole):
                         self.resetbuffer()
 
             if not quiet:
-                self.write(
-                    cyan(f"... {stmt}", bold=(not self._skip_subsequent))
-                )
+                self.write(cyan(f"... {stmt}", bold=(not self._skip_subsequent)))
 
             if self._skip_subsequent:
                 self.session_history.append(stmt)
@@ -1008,9 +984,7 @@ class ImprovedConsole(InteractiveConsole):
         retries = 2
         while retries:
             try:
-                super(ImprovedConsole, self).interact(
-                    banner=banner, exitmsg=exitmsg
-                )
+                super(ImprovedConsole, self).interact(banner=banner, exitmsg=exitmsg)
             except SystemExit:
                 # Fixes #2: exit when 'quit()' invoked
                 break
