@@ -1,681 +1,690 @@
-# -*- coding: utf-8 -*-
+"""Smoke tests for tcpQueue. Exercises:
+- HMAC-authenticated round trip via SQLite
+- Sentinel collision fix ([] / None as legitimate data)
+- Empty exception on empty queue
+- Bad HMAC rejection
+- Clean stop_server() with active connections
+- Thread-safe client
+- JSON: TypeError on bytes / sets, tuple round-trips as list
+- Persistence across server restart
+- TTL reaper deletes old rows
+- Max queue size evicts oldest
+- Signal handler triggers shutdown
 """
-Unit and integration tests for tcpQueue.py.
 
-Unit tests cover internal helpers and in-process queue operations with no
-network involvement.  Integration tests spin up a real loopback server on an
-ephemeral port and exercise the full send/receive path.
-
-Run with:
-    python -m pytest test_tcpQueue.py -v
-"""
-
-import pickle
-import socket
+import logging
+import os
+import secrets
+import shutil
+import signal
 import sys
+import tempfile
 import threading
-import time
-import types
-import unittest
-import zlib
-from unittest.mock import MagicMock, patch
-
-# ---------------------------------------------------------------------------
-# Bootstrap: provide stub modules for optional dependencies so the import
-# works in any environment (syslog available on non-Unix systems).
-# ---------------------------------------------------------------------------
+from pathlib import Path
+from queue import Empty
+from time import sleep
 
-_syslog_stub = types.ModuleType("syslog")
-_syslog_stub.openlog = MagicMock()
-_syslog_stub.syslog = MagicMock()
-_syslog_stub.closelog = MagicMock()
-sys.modules.setdefault("syslog", _syslog_stub)
+sys.path.insert(0, "/home/claude")
+import tcpQueue
+from tcpQueue import MyQueue
 
-import tcpQueue  # noqa: E402  (must come after stub setup)
+logging.basicConfig(
+    level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s"
+)
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+KEY = secrets.token_bytes(32)
 
 
-def _find_free_port() -> int:
-    """Ask the OS for an available port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _encode(obj) -> bytes:
-    """Compress-pickle an object the same way tcpQueue does internally."""
-    return zlib.compress(pickle.dumps(obj), 1)
-
-
-def _loopback_socket_pair():
-    """Return a connected (client_sock, server_sock) pair over loopback."""
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind(("127.0.0.1", 0))
-    server.listen(1)
-    port = server.getsockname()[1]
-    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client.connect(("127.0.0.1", port))
-    conn, _ = server.accept()
-    server.close()
-    return client, conn
-
-
-# ---------------------------------------------------------------------------
-# Module-level teardown: clear global queues between test classes
-# ---------------------------------------------------------------------------
+class _PortBox:
+    """Hands out a fresh port number for each test so they don't collide."""
 
+    def __init__(self, start=49200):
+        self.next = start
 
-def _reset_global_queues():
-    for q in (
-        tcpQueue.consumerQueue,
-        tcpQueue.producerQueue,
-        tcpQueue.workerQueue,
-    ):
-        q.clear()
+    def get(self):
+        p = self.next
+        self.next += 1
+        return p
 
 
-# ============================================================================
-# 1. Helpers: _make_frame
-# ============================================================================
+PORTS = _PortBox()
 
 
-class TestMakeFrame(unittest.TestCase):
+class _DbBox:
+    """Per-test temp directory for SQLite files. Cleaned up at end."""
 
-    def test_empty_payload(self):
-        frame = tcpQueue._make_frame(b"")
-        self.assertEqual(frame, b"0:")
+    def __init__(self):
+        self.root = Path(tempfile.mkdtemp(prefix="tcpqueue_test_"))
 
-    def test_short_payload(self):
-        frame = tcpQueue._make_frame(b"hello")
-        self.assertEqual(frame, b"5:hello")
-
-    def test_binary_payload(self):
-        payload = bytes(range(256))
-        frame = tcpQueue._make_frame(payload)
-        self.assertTrue(frame.startswith(b"256:"))
-        self.assertEqual(frame[4:], payload)
-
-    def test_length_prefix_is_ascii_digits(self):
-        payload = b"x" * 1000
-        frame = tcpQueue._make_frame(payload)
-        colon_idx = frame.index(b":")
-        length = int(frame[:colon_idx])
-        self.assertEqual(length, 1000)
-        self.assertEqual(frame[colon_idx + 1 :], payload)
-
-    def test_roundtrip_large_payload(self):
-        payload = b"a" * 100_000
-        frame = tcpQueue._make_frame(payload)
-        colon_idx = frame.index(b":")
-        length = int(frame[:colon_idx])
-        self.assertEqual(length, len(payload))
-        self.assertEqual(frame[colon_idx + 1 :], payload)
-
-
-# ============================================================================
-# 2. Helpers: _recv_exactly (via real socket pair)
-# ============================================================================
-
-
-class TestRecvExactly(unittest.TestCase):
-
-    def setUp(self):
-        self.client, self.server = _loopback_socket_pair()
-
-    def tearDown(self):
-        self.client.close()
-        self.server.close()
+    def path(self, name="queue.db"):
+        return self.root / name
 
-    def test_receives_exact_bytes(self):
-        self.client.sendall(b"hello world")
-        result = tcpQueue._recv_exactly(self.server, 11)
-        self.assertEqual(result, b"hello world")
+    def cleanup(self):
+        shutil.rmtree(self.root, ignore_errors=True)
 
-    def test_receives_across_multiple_chunks(self):
-        # Send in two pieces to exercise the accumulation loop.
-        self.client.sendall(b"hello")
-        time.sleep(0.01)
-        self.client.sendall(b" world")
-        result = tcpQueue._recv_exactly(self.server, 11)
-        self.assertEqual(result, b"hello world")
 
-    def test_returns_none_on_closed_connection(self):
-        self.client.sendall(b"hi")
-        self.client.close()
-        # Ask for more bytes than were sent — should get None when socket closes.
-        result = tcpQueue._recv_exactly(self.server, 100)
-        self.assertIsNone(result)
-
-    def test_zero_bytes_returns_empty(self):
-        result = tcpQueue._recv_exactly(self.server, 0)
-        self.assertEqual(result, b"")
-
-    def test_large_payload_integrity(self):
-        payload = bytes(range(256)) * 400  # 102,400 bytes
-        self.client.sendall(payload)
-        result = tcpQueue._recv_exactly(self.server, len(payload))
-        self.assertEqual(result, payload)
-
-
-# ============================================================================
-# 3. Helpers: _read_framed_message (via real socket pair)
-# ============================================================================
-
-
-class TestReadFramedMessage(unittest.TestCase):
-
-    def setUp(self):
-        self.client, self.server = _loopback_socket_pair()
-
-    def tearDown(self):
-        self.client.close()
-        self.server.close()
-
-    def _send_frame(self, payload: bytes):
-        self.client.sendall(tcpQueue._make_frame(payload))
-
-    def test_reads_simple_payload(self):
-        self._send_frame(b"hello")
-        result = tcpQueue._read_framed_message(self.server)
-        self.assertEqual(result, b"hello")
-
-    def test_reads_empty_payload(self):
-        self._send_frame(b"")
-        result = tcpQueue._read_framed_message(self.server)
-        self.assertEqual(result, b"")
-
-    def test_reads_binary_payload(self):
-        payload = bytes(range(256))
-        self._send_frame(payload)
-        result = tcpQueue._read_framed_message(self.server)
-        self.assertEqual(result, payload)
-
-    def test_reads_multiple_sequential_frames(self):
-        for msg in [b"first", b"second", b"third"]:
-            self._send_frame(msg)
-        self.assertEqual(tcpQueue._read_framed_message(self.server), b"first")
-        self.assertEqual(tcpQueue._read_framed_message(self.server), b"second")
-        self.assertEqual(tcpQueue._read_framed_message(self.server), b"third")
-
-    def test_returns_none_on_closed_connection(self):
-        self.client.close()
-        result = tcpQueue._read_framed_message(self.server)
-        self.assertIsNone(result)
-
-    def test_raises_on_header_without_colon(self):
-        # Send 10 digits with no colon — should trigger the 'header too long' path.
-        self.client.sendall(b"1234567890")
-        with self.assertRaises(ValueError):
-            tcpQueue._read_framed_message(self.server)
-
-    def test_raises_on_empty_header(self):
-        # A bare colon with nothing before it is an empty header.
-        self.client.sendall(b":")
-        with self.assertRaises(ValueError):
-            tcpQueue._read_framed_message(self.server)
-
-    def test_raises_on_non_numeric_length(self):
-        self.client.sendall(b"abc:data")
-        with self.assertRaises((ValueError, Exception)):
-            tcpQueue._read_framed_message(self.server)
-
-
-# ============================================================================
-# 4. _EMPTY_PAYLOAD constant
-# ============================================================================
-
-
-class TestEmptyPayload(unittest.TestCase):
-
-    def test_decodes_to_empty_list(self):
-        decoded = pickle.loads(zlib.decompress(tcpQueue._EMPTY_PAYLOAD))
-        self.assertEqual(decoded, [])
-
-    def test_is_bytes(self):
-        self.assertIsInstance(tcpQueue._EMPTY_PAYLOAD, bytes)
-
-
-# ============================================================================
-# 5. myQueue.__init__ validation
-# ============================================================================
-
-
-class TestMyQueueInit(unittest.TestCase):
-
-    def test_valid_construction_defaults(self):
-        q = tcpQueue.myQueue()
-        self.assertEqual(q.myAddr, ("127.0.0.1", 49152))
-        self.assertIsNone(q.ssock)
-        self.assertIsNone(q.csock)
-
-    def test_valid_construction_custom(self):
-        q = tcpQueue.myQueue("192.168.1.1", 8080)
-        self.assertEqual(q.myAddr, ("192.168.1.1", 8080))
-
-    def test_raises_on_non_string_host(self):
-        with self.assertRaises(ValueError):
-            tcpQueue.myQueue(127001)
-
-    def test_raises_on_none_host(self):
-        with self.assertRaises(ValueError):
-            tcpQueue.myQueue(None)
-
-    def test_raises_on_port_zero(self):
-        with self.assertRaises(ValueError):
-            tcpQueue.myQueue("127.0.0.1", 0)
-
-    def test_raises_on_port_too_large(self):
-        with self.assertRaises(ValueError):
-            tcpQueue.myQueue("127.0.0.1", 65536)
-
-    def test_raises_on_negative_port(self):
-        with self.assertRaises(ValueError):
-            tcpQueue.myQueue("127.0.0.1", -1)
-
-    def test_raises_on_float_port(self):
-        with self.assertRaises(ValueError):
-            tcpQueue.myQueue("127.0.0.1", 8080.0)
-
-    def test_boundary_port_1(self):
-        q = tcpQueue.myQueue("127.0.0.1", 1)
-        self.assertEqual(q.myAddr[1], 1)
-
-    def test_boundary_port_65535(self):
-        q = tcpQueue.myQueue("127.0.0.1", 65535)
-        self.assertEqual(q.myAddr[1], 65535)
-
-
-# ============================================================================
-# 6. In-process queue operations (no network)
-# ============================================================================
-
-
-class TestInProcessQueueOps(unittest.TestCase):
-
-    def setUp(self):
-        _reset_global_queues()
-        self.q = tcpQueue.myQueue()
-
-    def tearDown(self):
-        _reset_global_queues()
-
-    # --- sendToConsumer / CQSize / isCQEmpty ---
-
-    def test_consumer_queue_starts_empty(self):
-        self.assertEqual(self.q.CQSize(), 0)
-        self.assertTrue(self.q.isCQEmpty())
-
-    def test_send_to_consumer_increments_size(self):
-        self.q.sendToConsumer("hello")
-        self.assertEqual(self.q.CQSize(), 1)
-        self.assertFalse(self.q.isCQEmpty())
-
-    def test_send_multiple_items_to_consumer(self):
+def test_basic_roundtrip():
+    print("\n--- test_basic_roundtrip ---")
+    db = _DbBox()
+    port = PORTS.get()
+    server = MyQueue("127.0.0.1", port, db_path=db.path(), secret_key=KEY)
+    server.start_server()
+    sleep(0.1)
+    try:
         for i in range(5):
-            self.q.sendToConsumer(i)
-        self.assertEqual(self.q.CQSize(), 5)
-
-    def test_consumer_queue_contains_compressed_pickled_data(self):
-        self.q.sendToConsumer({"key": "value"})
-        raw = tcpQueue.consumerQueue[0]
-        decoded = pickle.loads(zlib.decompress(raw))
-        self.assertEqual(decoded, {"key": "value"})
-
-    # --- producer queue ---
-
-    def test_producer_queue_starts_empty(self):
-        self.assertEqual(self.q.PQSize(), 0)
-        self.assertTrue(self.q.isPQEmpty())
-
-    # --- clearQueues ---
-
-    def test_clear_queues_empties_both(self):
-        self.q.sendToConsumer("a")
-        tcpQueue.producerQueue.appendleft(_encode("b"))
-        self.q.clearQueues()
-        self.assertEqual(self.q.CQSize(), 0)
-        self.assertEqual(self.q.PQSize(), 0)
+            server.send_to_consumer({"i": i, "msg": f"hello {i}"})
+        assert server.consumer_size() == 5
+
+        client = MyQueue("127.0.0.1", port, secret_key=KEY)
+        client.start_client()
+        results = []
+        try:
+            while True:
+                results.append(client.get_consumer())
+        except Empty:
+            pass
+        client.close()
+
+        assert len(results) == 5
+        assert results[0] == {"i": 0, "msg": "hello 0"}
+        print(f"  OK: round-tripped {len(results)} items via SQLite")
+    finally:
+        server.stop_server()
+        db.cleanup()
+
+
+def test_sentinel_collision_fix():
+    print("\n--- test_sentinel_collision_fix ---")
+    db = _DbBox()
+    port = PORTS.get()
+    server = MyQueue("127.0.0.1", port, db_path=db.path(), secret_key=KEY)
+    server.start_server()
+    sleep(0.1)
+    try:
+        tricky = [[], None, 0, "", False, [None], {}]
+        for v in tricky:
+            server.send_to_consumer(v)
+
+        client = MyQueue("127.0.0.1", port, secret_key=KEY)
+        client.start_client()
+        results = [client.get_consumer() for _ in tricky]
+        try:
+            client.get_consumer()
+            assert False
+        except Empty:
+            pass
+        client.close()
+
+        assert results == tricky
+        print(f"  OK: {tricky} round-tripped; Empty raised when drained")
+    finally:
+        server.stop_server()
+        db.cleanup()
+
+
+def test_producer_path():
+    print("\n--- test_producer_path ---")
+    db = _DbBox()
+    port = PORTS.get()
+    server = MyQueue("127.0.0.1", port, db_path=db.path(), secret_key=KEY)
+    server.start_server()
+    sleep(0.1)
+    try:
+        client = MyQueue("127.0.0.1", port, secret_key=KEY)
+        client.start_client()
+        for i in range(3):
+            assert client.send_to_producer(f"result {i}")
+        sleep(0.1)
+        client.close()
+
+        reader = MyQueue("127.0.0.1", port, secret_key=KEY)
+        reader.start_client()
+        results = []
+        try:
+            while True:
+                results.append(reader.get_producer())
+        except Empty:
+            pass
+        reader.close()
+
+        assert results == ["result 0", "result 1", "result 2"]
+        print(f"  OK: producer path delivered {results}")
+    finally:
+        server.stop_server()
+        db.cleanup()
+
+
+def test_bad_hmac_rejected():
+    print("\n--- test_bad_hmac_rejected ---")
+    db = _DbBox()
+    port = PORTS.get()
+    server = MyQueue("127.0.0.1", port, db_path=db.path(), secret_key=KEY)
+    server.start_server()
+    sleep(0.1)
+    try:
+        server.send_to_consumer("secret data")
+        wrong = secrets.token_bytes(32)
+        client = MyQueue("127.0.0.1", port, secret_key=wrong)
+        client.start_client()
+        try:
+            client.get_consumer()
+            assert False
+        except ConnectionError as ex:
+            print(f"  OK: bad key rejected ({ex})")
+        finally:
+            client.close()
+    finally:
+        server.stop_server()
+        db.cleanup()
+
+
+def test_clean_shutdown():
+    print("\n--- test_clean_shutdown ---")
+    db = _DbBox()
+    port = PORTS.get()
+    server = MyQueue("127.0.0.1", port, db_path=db.path(), secret_key=KEY)
+    server.start_server()
+    sleep(0.1)
+
+    clients = []
+    for _ in range(3):
+        c = MyQueue("127.0.0.1", port, secret_key=KEY)
+        c.start_client()
+        clients.append(c)
+
+    sleep(0.1)
+    server.stop_server()
+    print("  OK: server stopped cleanly with active connections")
+    for c in clients:
+        c.close()
+    db.cleanup()
+
+
+def test_thread_safety():
+    print("\n--- test_thread_safety ---")
+    db = _DbBox()
+    port = PORTS.get()
+    server = MyQueue("127.0.0.1", port, db_path=db.path(), secret_key=KEY)
+    server.start_server()
+    sleep(0.1)
+    try:
+        client = MyQueue("127.0.0.1", port, secret_key=KEY)
+        client.start_client()
+
+        N_THREADS, N_PER = 5, 50
+        errors: list[Exception] = []
+
+        def worker(tid: int):
+            try:
+                for i in range(N_PER):
+                    client.send_to_producer([tid, i])
+            except Exception as ex:
+                errors.append(ex)
 
-    def test_clear_queues_idempotent_on_empty(self):
-        self.q.clearQueues()  # Should not raise
-        self.assertEqual(self.q.CQSize(), 0)
-
-    # --- close ---
-
-    def test_close_sets_csock_to_none(self):
-        mock_sock = MagicMock()
-        self.q.csock = mock_sock
-        self.q.close()
-        self.assertIsNone(self.q.csock)
-
-    def test_close_calls_shutdown_and_close_on_socket(self):
-        mock_sock = MagicMock()
-        self.q.csock = mock_sock
-        self.q.close()
-        mock_sock.shutdown.assert_called_once_with(socket.SHUT_RDWR)
-        mock_sock.close.assert_called_once()
-
-    def test_close_tolerates_none_csock(self):
-        self.q.csock = None
-        self.q.close()  # Should not raise
-
-    def test_close_clears_instance_dicts(self):
-        self.q._test_dict = {"a": 1}
-        self.q.close()
-        self.assertEqual(self.q._test_dict, {})
-
-    def test_close_clears_instance_lists(self):
-        self.q._test_list = [1, 2, 3]
-        self.q.close()
-        self.assertEqual(self.q._test_list, [])
-
-    # --- __str__ ---
-
-    def test_str_returns_string(self):
-        self.assertIsInstance(str(self.q), str)
-
-    def test_str_contains_myAddr(self):
-        result = str(self.q)
-        self.assertIn("myAddr", result)
-
-    def test_str_is_sorted(self):
-        result = str(self.q)
-        # Parse out the key names and verify they are in alphabetical order.
-        pairs = eval(result)  # safe — it's our own __str__ output
-        keys = [p[0] for p in pairs]
-        self.assertEqual(keys, sorted(keys))
-
-
-# ============================================================================
-# 7. logger
-# ============================================================================
-
-
-class TestLogger(unittest.TestCase):
-
-    def setUp(self):
-        self._orig_debug = tcpQueue.DEBUG
-        import warnings
-
-        warnings.simplefilter("ignore", ResourceWarning)
-
-    def tearDown(self):
-        tcpQueue.DEBUG = self._orig_debug
-
-    def test_empty_message_does_nothing(self):
-        # Verify that an empty message causes an immediate return with no output.
-        tcpQueue.DEBUG = True
-        with patch("builtins.print") as mock_print:
-            tcpQueue.logger("")
-            mock_print.assert_not_called()
-        tcpQueue.logger("  ")  # whitespace-only str() is non-empty, should log
-        # No assertion needed — just confirming it doesn't raise.
-
-    def test_debug_mode_prints(self):
-        tcpQueue.DEBUG = True
-        with patch("builtins.print") as mock_print:
-            tcpQueue.logger("test message", "TESTID")
-            mock_print.assert_called_once()
-            printed = mock_print.call_args[0][0]
-            self.assertIn("TESTID", printed)
-            self.assertIn("test message", printed)
-
-    def test_non_string_message_is_stringified(self):
-        tcpQueue.DEBUG = True
-        with patch("builtins.print") as mock_print:
-            tcpQueue.logger(42)
-            printed = mock_print.call_args[0][0]
-            self.assertIn("42", printed)
-
-
-# ============================================================================
-# 8. _close_socket
-# ============================================================================
-
-
-class TestCloseSocket(unittest.TestCase):
-
-    def test_calls_shutdown_and_close(self):
-        mock_sock = MagicMock()
-        tcpQueue._close_socket(mock_sock)
-        mock_sock.shutdown.assert_called_once_with(socket.SHUT_RDWR)
-        mock_sock.close.assert_called_once()
-
-    def test_tolerates_shutdown_exception(self):
-        mock_sock = MagicMock()
-        mock_sock.shutdown.side_effect = OSError("already closed")
-        tcpQueue._close_socket(mock_sock)  # Should not raise
-        mock_sock.close.assert_called_once()
-
-    def test_tolerates_close_exception(self):
-        mock_sock = MagicMock()
-        mock_sock.close.side_effect = OSError("already closed")
-        tcpQueue._close_socket(mock_sock)  # Should not raise
-
-
-# ============================================================================
-# 9. Integration tests — full loopback server/client
-# ============================================================================
-
-
-class TestIntegration(unittest.TestCase):
-    """Start a real server on a loopback port and exercise the full path."""
-
-    PORT: int = 0  # assigned in setUpClass
-
-    @classmethod
-    def setUpClass(cls):
-        _reset_global_queues()
-        cls.PORT = _find_free_port()
-        cls.server_q = tcpQueue.myQueue("127.0.0.1", cls.PORT)
-        cls.server_q.startServer()
-        time.sleep(0.05)  # Let the listener thread start.
-
-    @classmethod
-    def tearDownClass(cls):
-        if cls.server_q.ssock:
-            cls.server_q.ssock.close()
-        _reset_global_queues()
-
-    def setUp(self):
-        _reset_global_queues()
-        self.client_q = tcpQueue.myQueue("127.0.0.1", self.PORT)
-        self.client_q.startClient()
-        self.assertIsNotNone(self.client_q.csock, "Client failed to connect")
-
-    def tearDown(self):
-        self.client_q.close()
-        _reset_global_queues()
-
-    # --- Consumer queue (server pushes, client pulls) ---
-
-    def test_consumer_roundtrip_string(self):
-        self.server_q.sendToConsumer("hello")
-        result = self.client_q.getConsumer()
-        self.assertEqual(result, "hello")
-
-    def test_consumer_roundtrip_integer(self):
-        self.server_q.sendToConsumer(42)
-        result = self.client_q.getConsumer()
-        self.assertEqual(result, 42)
-
-    def test_consumer_roundtrip_list(self):
-        data = [1, "two", 3.0, None, True]
-        self.server_q.sendToConsumer(data)
-        result = self.client_q.getConsumer()
-        self.assertEqual(result, data)
-
-    def test_consumer_roundtrip_dict(self):
-        data = {"key": "value", "nested": {"a": 1}}
-        self.server_q.sendToConsumer(data)
-        result = self.client_q.getConsumer()
-        self.assertEqual(result, data)
-
-    def test_consumer_roundtrip_bytes(self):
-        data = bytes(range(256))
-        self.server_q.sendToConsumer(data)
-        result = self.client_q.getConsumer()
-        self.assertEqual(result, data)
-
-    def test_consumer_roundtrip_large_payload(self):
-        data = list(range(10_000))
-        self.server_q.sendToConsumer(data)
-        result = self.client_q.getConsumer()
-        self.assertEqual(result, data)
-
-    def test_consumer_empty_queue_returns_empty_list(self):
-        # Queue is empty — server should send the _EMPTY_PAYLOAD sentinel.
-        result = self.client_q.getConsumer()
-        self.assertEqual(result, [])
-
-    def test_consumer_fifo_order(self):
-        # deque.appendleft + deque.pop = FIFO (items come out in push order).
-        for i in range(5):
-            self.server_q.sendToConsumer(i)
-        results = [self.client_q.getConsumer() for _ in range(5)]
-        self.assertEqual(results, list(range(5)))
-
-    # --- Producer queue (client pushes, server pulls) ---
-
-    def test_producer_roundtrip_string(self):
-        self.client_q.sendToProducer("world")
-        time.sleep(0.05)  # Let the server thread push to producerQueue.
-        result = self.server_q.getProducer()
-        self.assertEqual(result, "world")
-
-    def test_producer_roundtrip_dict(self):
-        data = {"status": "ok", "code": 200}
-        self.client_q.sendToProducer(data)
-        time.sleep(0.05)
-        result = self.server_q.getProducer()
-        self.assertEqual(result, data)
-
-    def test_producer_empty_queue_returns_empty_list(self):
-        result = self.server_q.getProducer()
-        self.assertEqual(result, [])
-
-    def test_producer_roundtrip_large_payload(self):
-        data = {"items": list(range(5_000))}
-        self.client_q.sendToProducer(data)
-        time.sleep(0.05)
-        result = self.server_q.getProducer()
-        self.assertEqual(result, data)
-
-    # --- Bidirectional in one session ---
-
-    def test_bidirectional_exchange(self):
-        self.server_q.sendToConsumer("task")
-        task = self.client_q.getConsumer()
-        self.assertEqual(task, "task")
-
-        self.client_q.sendToProducer("result")
-        time.sleep(0.05)
-        result = self.server_q.getProducer()
-        self.assertEqual(result, "result")
-
-    # --- Queue size helpers ---
-
-    def test_cqsize_reflects_pending_items(self):
-        self.assertEqual(self.server_q.CQSize(), 0)
-        self.server_q.sendToConsumer("a")
-        self.server_q.sendToConsumer("b")
-        self.assertEqual(self.server_q.CQSize(), 2)
-        self.client_q.getConsumer()
-        self.assertEqual(self.server_q.CQSize(), 1)
-
-    def test_pqsize_reflects_pending_items(self):
-        self.assertEqual(self.server_q.PQSize(), 0)
-        self.client_q.sendToProducer("x")
-        time.sleep(0.05)
-        self.assertEqual(self.server_q.PQSize(), 1)
-
-    # --- Reconnect after close ---
-
-    def test_getconsumer_reconnects_after_close(self):
-        self.client_q.close()
-        self.assertIsNone(self.client_q.csock)
-        self.server_q.sendToConsumer("reconnect test")
-        # getConsumer should transparently reconnect.
-        result = self.client_q.getConsumer()
-        self.assertEqual(result, "reconnect test")
-
-    # --- sendToProducer retry ---
-
-    def test_sendtoproducer_retries_on_broken_socket(self):
-        """Simulate a broken socket on the first attempt; the retry should succeed."""
-        real_csock = self.client_q.csock
-        call_count = [0]
-
-        # Wrap the real socket in a MagicMock that fails once then delegates.
-        mock_sock = MagicMock(wraps=real_csock)
-
-        def flaky_sendall(data):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                # Nullify csock so sendToProducer triggers reconnect on retry.
-                self.client_q.csock = None
-                raise OSError("simulated broken pipe")
-            return real_csock.sendall(data)
-
-        mock_sock.sendall = flaky_sendall
-        self.client_q.csock = mock_sock
-
-        self.client_q.sendToProducer("retry me")
-        time.sleep(0.1)
-        result = self.server_q.getProducer()
-        self.assertEqual(result, "retry me")
-
-
-# ============================================================================
-# 10. Concurrent access
-# ============================================================================
-
-
-class TestConcurrentAccess(unittest.TestCase):
-    """Verify thread safety of the in-process queue operations."""
-
-    def setUp(self):
-        _reset_global_queues()
-        self.q = tcpQueue.myQueue()
-
-    def tearDown(self):
-        _reset_global_queues()
-
-    def test_concurrent_sendToConsumer(self):
-        n = 200
         threads = [
-            threading.Thread(target=self.q.sendToConsumer, args=(i,)) for i in range(n)
+            threading.Thread(target=worker, args=(t,))
+            for t in range(N_THREADS)
         ]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
-        self.assertEqual(self.q.CQSize(), n)
+        sleep(0.3)
+        client.close()
 
-    def test_concurrent_clearQueues_does_not_corrupt(self):
-        for i in range(50):
-            self.q.sendToConsumer(i)
+        assert not errors, f"errors: {errors}"
+        assert server.producer_size() == N_THREADS * N_PER
+        print(f"  OK: {N_THREADS * N_PER} concurrent sends all delivered")
+    finally:
+        server.stop_server()
+        db.cleanup()
 
-        errors = []
 
-        def clear_loop():
+def test_json_unsupported_types():
+    print("\n--- test_json_unsupported_types ---")
+    db = _DbBox()
+    port = PORTS.get()
+    server = MyQueue("127.0.0.1", port, db_path=db.path(), secret_key=KEY)
+    server.start_server()
+    sleep(0.1)
+    try:
+        for bad in [b"raw bytes", {1, 2, 3}, frozenset([1])]:
             try:
-                for _ in range(10):
-                    self.q.clearQueues()
-            except Exception as e:
-                errors.append(e)
+                server.send_to_consumer(bad)
+                assert False, f"expected TypeError for {bad!r}"
+            except TypeError:
+                pass
+        print("  OK: TypeError raised on bytes/set/frozenset")
+    finally:
+        server.stop_server()
+        db.cleanup()
 
-        threads = [threading.Thread(target=clear_loop) for _ in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
 
-        self.assertEqual(errors, [], "Exceptions during concurrent clearQueues")
+def test_tuple_becomes_list():
+    print("\n--- test_tuple_becomes_list ---")
+    db = _DbBox()
+    port = PORTS.get()
+    server = MyQueue("127.0.0.1", port, db_path=db.path(), secret_key=KEY)
+    server.start_server()
+    sleep(0.1)
+    try:
+        server.send_to_consumer((1, 2, 3))
+        client = MyQueue("127.0.0.1", port, secret_key=KEY)
+        client.start_client()
+        result = client.get_consumer()
+        client.close()
+        assert result == [1, 2, 3] and isinstance(result, list)
+        print(f"  OK: tuple (1,2,3) -> list {result} (documented)")
+    finally:
+        server.stop_server()
+        db.cleanup()
+
+
+def test_persistence_across_restart():
+    """The whole point of on-disk SQLite: data survives the server going
+    away. Push some items, stop the server entirely, start a brand-new
+    one against the same DB, drain it."""
+    print("\n--- test_persistence_across_restart ---")
+    db = _DbBox()
+    port = PORTS.get()
+    db_path = db.path()
+    try:
+        # Round 1
+        server1 = MyQueue("127.0.0.1", port, db_path=db_path, secret_key=KEY)
+        server1.start_server()
+        sleep(0.1)
+        for i in range(10):
+            server1.send_to_consumer({"id": i})
+        assert server1.consumer_size() == 10
+        server1.stop_server()
+        del server1
+        sleep(0.1)
+
+        # Round 2 — fresh instance, same DB
+        server2 = MyQueue("127.0.0.1", port, db_path=db_path, secret_key=KEY)
+        assert (
+            server2.consumer_size() == 10
+        ), f"expected 10 surviving items, got {server2.consumer_size()}"
+        server2.start_server()
+        sleep(0.1)
+
+        client = MyQueue("127.0.0.1", port, secret_key=KEY)
+        client.start_client()
+        ids = []
+        try:
+            while True:
+                ids.append(client.get_consumer()["id"])
+        except Empty:
+            pass
+        client.close()
+
+        assert ids == list(range(10)), f"got {ids}"
+        print(f"  OK: 10 items survived process boundary, drained in order")
+        server2.stop_server()
+    finally:
+        db.cleanup()
+
+
+def test_ttl_reaper():
+    """Set TTL to 1s and a reaper interval of 0.5s. Push items, sleep
+    past TTL, verify they're gone."""
+    print("\n--- test_ttl_reaper ---")
+    db = _DbBox()
+    port = PORTS.get()
+    server = MyQueue(
+        "127.0.0.1",
+        port,
+        db_path=db.path(),
+        secret_key=KEY,
+        ttl_seconds=1.0,
+        reaper_interval=0.3,
+    )
+    server.start_server()
+    sleep(0.1)
+    try:
+        for i in range(5):
+            server.send_to_consumer({"i": i})
+        assert server.consumer_size() == 5
+
+        # Wait for items to age past TTL + at least one reaper pass
+        sleep(1.6)
+
+        size = server.consumer_size()
+        assert size == 0, f"expected 0 after TTL reap, got {size}"
+        print("  OK: 5 items expired and were reaped")
+    finally:
+        server.stop_server()
+        db.cleanup()
+
+
+def test_max_queue_size_eviction():
+    print("\n--- test_max_queue_size_eviction ---")
+    db = _DbBox()
+    port = PORTS.get()
+    server = MyQueue(
+        "127.0.0.1",
+        port,
+        db_path=db.path(),
+        secret_key=KEY,
+        max_queue_size=3,
+    )
+    server.start_server()
+    sleep(0.1)
+    try:
+        for i in range(5):
+            server.send_to_consumer({"i": i})
+        assert server.consumer_size() == 3, f"got {server.consumer_size()}"
+
+        # The two oldest (i=0, i=1) should have been evicted
+        client = MyQueue("127.0.0.1", port, secret_key=KEY)
+        client.start_client()
+        ids = []
+        try:
+            while True:
+                ids.append(client.get_consumer()["i"])
+        except Empty:
+            pass
+        client.close()
+        assert ids == [2, 3, 4], f"got {ids}"
+        print("  OK: oldest items evicted when queue full")
+    finally:
+        server.stop_server()
+        db.cleanup()
+
+
+def test_signal_handler_triggers_shutdown():
+    """Send ourselves SIGUSR1 (using a custom signal so we don't disrupt
+    other tests). Verify stop_server runs and wait_for_shutdown returns."""
+    print("\n--- test_signal_handler_triggers_shutdown ---")
+    db = _DbBox()
+    port = PORTS.get()
+    server = MyQueue("127.0.0.1", port, db_path=db.path(), secret_key=KEY)
+    server.start_server()
+    sleep(0.1)
+    try:
+        # Use SIGUSR1 to avoid colliding with the test runner's signals.
+        sig = getattr(signal, "SIGUSR1", None)
+        if sig is None:
+            print("  SKIP: SIGUSR1 not available on this platform")
+            return
+
+        server.install_signal_handlers(signals=(sig,))
+
+        # In a background thread, send ourselves the signal after a short delay.
+        def fire():
+            sleep(0.2)
+            os.kill(os.getpid(), sig)
+
+        threading.Thread(target=fire, daemon=True).start()
+
+        # Block on shutdown event with a generous timeout
+        got = server.wait_for_shutdown(timeout=5.0)
+        assert got, "shutdown did not fire within 5s"
+        assert server._ssock is None, "stop_server did not run"
+        print("  OK: signal triggered stop_server cleanly")
+    finally:
+        # stop_server already ran via the handler; calling again is a no-op
+        server.stop_server()
+        db.cleanup()
+
+
+def test_peek_does_not_dequeue():
+    print("\n--- test_peek_does_not_dequeue ---")
+    db = _DbBox()
+    port = PORTS.get()
+    server = MyQueue("127.0.0.1", port, db_path=db.path(), secret_key=KEY)
+    server.start_server()
+    sleep(0.1)
+    try:
+        for i in range(3):
+            server.send_to_consumer({"i": i})
+        # Peek twice — should return same item, count unchanged
+        a = server.peek_consumer()
+        b = server.peek_consumer()
+        assert a == b == {"i": 0}, f"peek mismatch: {a} {b}"
+        assert server.consumer_size() == 3, "peek changed size"
+        # Empty case raises
+        server.clear_queues()
+        try:
+            server.peek_consumer()
+            assert False
+        except Empty:
+            pass
+        print("  OK: peek returns oldest item without dequeueing")
+    finally:
+        server.stop_server()
+        db.cleanup()
+
+
+def test_schema_version_check():
+    """A DB stamped with a higher schema version should be refused."""
+    print("\n--- test_schema_version_check ---")
+    db = _DbBox()
+    port = PORTS.get()
+    db_path = db.path()
+    try:
+        # Create a fresh DB, bump its user_version past what code supports
+        import sqlite3 as _sql
+
+        from tcpQueue import _SCHEMA_VERSION
+
+        future = _SCHEMA_VERSION + 999
+        conn = _sql.connect(str(db_path))
+        conn.execute(f"PRAGMA user_version = {future}")
+        conn.commit()
+        conn.close()
+
+        try:
+            MyQueue("127.0.0.1", port, db_path=db_path, secret_key=KEY)
+            assert False, "should have refused future-schema DB"
+        except RuntimeError as ex:
+            assert "newer than this code supports" in str(
+                ex
+            ), f"wrong message: {ex}"
+            print(f"  OK: refused DB with future schema version ({ex})")
+    finally:
+        db.cleanup()
+
+
+def test_schema_version_stamp():
+    """A fresh DB should be stamped with the current schema version."""
+    print("\n--- test_schema_version_stamp ---")
+    db = _DbBox()
+    port = PORTS.get()
+    db_path = db.path()
+    try:
+        from tcpQueue import _SCHEMA_VERSION
+
+        MyQueue("127.0.0.1", port, db_path=db_path, secret_key=KEY)
+        # Read it back
+        import sqlite3 as _sql
+
+        conn = _sql.connect(str(db_path))
+        (v,) = conn.execute("PRAGMA user_version").fetchone()
+        conn.close()
+        assert v == _SCHEMA_VERSION, f"expected {_SCHEMA_VERSION}, got {v}"
+        print(f"  OK: fresh DB stamped with version {v}")
+    finally:
+        db.cleanup()
+
+
+def test_autovacuum_set_on_fresh_db():
+    """Fresh DBs should have auto_vacuum=INCREMENTAL (mode 2)."""
+    print("\n--- test_autovacuum_set_on_fresh_db ---")
+    import sqlite3
+
+    db = _DbBox()
+    server = MyQueue(
+        "127.0.0.1", PORTS.get(), db_path=db.path(), secret_key=KEY
+    )
+    try:
+        conn = sqlite3.connect(str(db.path()))
+        try:
+            (av,) = conn.execute("PRAGMA auto_vacuum").fetchone()
+            assert av == 2, f"expected auto_vacuum=2 (INCREMENTAL), got {av}"
+            print(f"  OK: fresh DB has auto_vacuum=INCREMENTAL")
+        finally:
+            conn.close()
+    finally:
+        del server
+        db.cleanup()
+
+
+def test_compaction_shrinks_db_file():
+    """After pushing big payloads, draining, and compacting, the .db file
+    should shrink dramatically. Without auto_vacuum it would stay sized
+    for the high-water mark."""
+    print("\n--- test_compaction_shrinks_db_file ---")
+    import os as _os
+
+    db = _DbBox()
+    db_path = db.path()
+    server = MyQueue("127.0.0.1", PORTS.get(), db_path=db_path, secret_key=KEY)
+    server.start_server()
+    sleep(0.1)
+    try:
+        # Push 1000 messages of pseudo-random data so zlib can't crush them
+        # to nothing. Each ~500 bytes of incompressible data.
+        for i in range(1000):
+            server.send_to_consumer(
+                {
+                    "i": i,
+                    "data": _os.urandom(500).hex(),  # 1KB hex string, random
+                }
+            )
+        # Force pending WAL into the main DB so the size measurement is real.
+        server.compact()
+        size_full = _os.path.getsize(db_path)
+
+        # Drain everything.
+        server.clear_queues()
+        # And compact.
+        server.compact()
+        size_compact = _os.path.getsize(db_path)
+
+        # We expect a large reduction. The remaining bytes are schema +
+        # bookkeeping pages, which don't depend on the data volume.
+        assert size_compact < size_full * 0.10, (
+            f"file didn't shrink enough: {size_full:,} -> {size_compact:,} "
+            f"({size_compact / size_full:.0%} of original)"
+        )
+        print(
+            f"  OK: file shrank {size_full:,} -> {size_compact:,} bytes "
+            f"({size_compact / size_full:.0%})"
+        )
+    finally:
+        server.stop_server()
+        db.cleanup()
+
+
+def test_wal_truncate():
+    """After significant writes the WAL grows; after compact() it should
+    be truncated to (near) zero bytes."""
+    print("\n--- test_wal_truncate ---")
+    db = _DbBox()
+    db_path = db.path()
+    server = MyQueue("127.0.0.1", PORTS.get(), db_path=db_path, secret_key=KEY)
+    server.start_server()
+    sleep(0.1)
+    try:
+        for i in range(500):
+            server.send_to_consumer({"i": i, "data": "x" * 500})
+        sleep(0.1)
+
+        wal_path = str(db_path) + "-wal"
+        wal_before = (
+            os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
+        )
+
+        server.compact()
+
+        wal_after = (
+            os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
+        )
+
+        assert (
+            wal_after < 100
+        ), f"WAL not truncated: {wal_before:,} -> {wal_after:,} bytes"
+        print(f"  OK: WAL truncated {wal_before:,} -> {wal_after:,} bytes")
+    finally:
+        server.stop_server()
+        db.cleanup()
+
+
+def test_legacy_db_warns():
+    """Opening a pre-existing DB without auto_vacuum should log a warning
+    explaining the manual migration."""
+    print("\n--- test_legacy_db_warns ---")
+    import sqlite3
+
+    db = _DbBox()
+    db_path = db.path()
+
+    try:
+        # Manually create a "legacy" DB: tables, no auto_vacuum, no version.
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE consumer (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "payload BLOB, created_at REAL)"
+        )
+        conn.execute(
+            "CREATE TABLE producer (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "payload BLOB, created_at REAL)"
+        )
+        conn.commit()
+        conn.close()
+
+        # Capture warnings emitted during MyQueue construction.
+        warnings_seen: list[str] = []
+
+        class Capture(logging.Handler):
+            def emit(self, record):
+                if record.levelno >= logging.WARNING:
+                    warnings_seen.append(record.getMessage())
+
+        handler = Capture()
+        logger = logging.getLogger("pyTCPQueue")
+        logger.addHandler(handler)
+        try:
+            server = MyQueue(
+                "127.0.0.1",
+                PORTS.get(),
+                db_path=db_path,
+                secret_key=KEY,
+            )
+            del server  # not started, just constructed
+        finally:
+            logger.removeHandler(handler)
+
+        relevant = [w for w in warnings_seen if "auto_vacuum" in w]
+        assert relevant, f"no auto_vacuum warning: {warnings_seen}"
+        # Sanity check the message includes the migration command
+        assert (
+            "VACUUM" in relevant[0]
+        ), f"warning lacks migration hint: {relevant[0]}"
+        print(f"  OK: legacy DB triggered migration warning")
+    finally:
+        db.cleanup()
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    test_basic_roundtrip()
+    test_sentinel_collision_fix()
+    test_producer_path()
+    test_bad_hmac_rejected()
+    test_clean_shutdown()
+    test_thread_safety()
+    test_json_unsupported_types()
+    test_tuple_becomes_list()
+    test_persistence_across_restart()
+    test_ttl_reaper()
+    test_max_queue_size_eviction()
+    test_signal_handler_triggers_shutdown()
+    test_peek_does_not_dequeue()
+    test_schema_version_check()
+    test_schema_version_stamp()
+    test_autovacuum_set_on_fresh_db()
+    test_compaction_shrinks_db_file()
+    test_wal_truncate()
+    test_legacy_db_warns()
+    print("\nAll smoke tests passed.")
