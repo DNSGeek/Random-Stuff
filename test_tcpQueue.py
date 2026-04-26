@@ -25,7 +25,6 @@ from queue import Empty
 from time import sleep
 
 sys.path.insert(0, "/home/claude")
-import tcpQueue
 from tcpQueue import MyQueue
 
 logging.basicConfig(
@@ -319,7 +318,7 @@ def test_persistence_across_restart():
         client.close()
 
         assert ids == list(range(10)), f"got {ids}"
-        print(f"  OK: 10 items survived process boundary, drained in order")
+        print("  OK: 10 items survived process boundary, drained in order")
         server2.stop_server()
     finally:
         db.cleanup()
@@ -522,7 +521,7 @@ def test_autovacuum_set_on_fresh_db():
         try:
             (av,) = conn.execute("PRAGMA auto_vacuum").fetchone()
             assert av == 2, f"expected auto_vacuum=2 (INCREMENTAL), got {av}"
-            print(f"  OK: fresh DB has auto_vacuum=INCREMENTAL")
+            print("  OK: fresh DB has auto_vacuum=INCREMENTAL")
         finally:
             conn.close()
     finally:
@@ -662,7 +661,7 @@ def test_legacy_db_warns():
         assert (
             "VACUUM" in relevant[0]
         ), f"warning lacks migration hint: {relevant[0]}"
-        print(f"  OK: legacy DB triggered migration warning")
+        print("  OK: legacy DB triggered migration warning")
     finally:
         db.cleanup()
 

@@ -126,7 +126,7 @@ def test_failover_when_peer_dies():
         a.stop()
         ok = _wait_for(lambda: b.get_state() == "P", timeout=8)
         assert ok, f"b never claimed P; still {b.get_state()}"
-        print(f"  OK: surviving node b became P after a stopped")
+        print("  OK: surviving node b became P after a stopped")
     finally:
         b.stop()
 
@@ -207,7 +207,7 @@ def test_unhealthy_node_never_becomes_primary():
             timeout=10,
         )
         assert ok, f"unhealthy node won?: a={a.get_state()} b={b.get_state()}"
-        print(f"  OK: unhealthy a stayed S, healthy b became P")
+        print("  OK: unhealthy a stayed S, healthy b became P")
     finally:
         a.stop()
         b.stop()
@@ -312,7 +312,7 @@ def test_invalid_peer_byte_drops_connection():
             assert (
                 a._csock is None
             ), "expected csock to be invalidated after junk byte"
-        print(f"  OK: junk peer byte caused connection drop")
+        print("  OK: junk peer byte caused connection drop")
     finally:
         a.stop()
 
@@ -527,7 +527,7 @@ def test_dump_state_format():
             "shutdown set:",
         ):
             assert field in dump, f"dump missing field {field!r}: {dump}"
-        print(f"  OK: dump_state contains all expected fields")
+        print("  OK: dump_state contains all expected fields")
     finally:
         a.stop()
         b.stop()
