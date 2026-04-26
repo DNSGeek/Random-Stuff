@@ -144,18 +144,12 @@ Public API
 ``producer_empty()`` / ``clear_queues()``
     Server-side introspection.
 
-Migration notes (since the previous JSON+PEP 8 version)
--------------------------------------------------------
-
-* Constructor takes new keyword args: ``db_path`` (path to SQLite file;
-  required for any server-side use), ``ttl_seconds`` (None = no TTL),
-  ``reaper_interval`` (default 60.0).
-* The in-memory deques are gone. All server-side queue state lives in
-  SQLite.
-* New methods: ``install_signal_handlers``, ``wait_for_shutdown``.
-* Server-side methods raise ``RuntimeError`` if ``db_path`` was not
-  provided at construction time. Client-side methods do not require
-  ``db_path``.
+Standard invocation
+-------------------
+q = MyQueue("0.0.0.0", 49152, db_path="/var/lib/queue.db", secret_key=KEY)
+q.start_server()
+q.install_signal_handlers()
+q.wait_for_shutdown()  # blocks until SIGTERM/SIGINT
 """
 
 from __future__ import annotations
