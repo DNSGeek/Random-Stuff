@@ -185,12 +185,8 @@ log = logging.getLogger("pyTCPQueue")
 # (always 0x78) nor with any printable ASCII character.
 _OP_GET_CONSUMER: bytes = b"\x01"  # client -> server: give me a consumer item
 _OP_GET_PRODUCER: bytes = b"\x02"  # client -> server: give me a producer item
-_OP_PUT_PRODUCER: bytes = (
-    b"\x03"  # client -> server: enqueue payload to producer queue
-)
-_OP_ITEM: bytes = (
-    b"\x10"  # server -> client: here is an item (payload follows)
-)
+_OP_PUT_PRODUCER: bytes = b"\x03"  # client -> server: enqueue payload to producer queue
+_OP_ITEM: bytes = b"\x10"  # server -> client: here is an item (payload follows)
 _OP_EMPTY: bytes = b"\x11"  # server -> client: queue was empty (no payload)
 
 _HMAC_SIZE: int = 32  # HMAC-SHA256 digest length, in bytes
@@ -273,8 +269,7 @@ class _Frame:
             remaining = _MAX_HEADER_BYTES - len(header)
             if remaining <= 0:
                 raise ValueError(
-                    "header exceeds %d bytes; no colon found"
-                    % _MAX_HEADER_BYTES
+                    "header exceeds %d bytes; no colon found" % _MAX_HEADER_BYTES
                 )
             chunk = sock.recv(remaining)
             if not chunk:
@@ -335,9 +330,7 @@ class MyQueue:
         version on a fresh DB."""
         # Open a dedicated connection for setup, separate from _open_db's
         # thread-local cache. We need direct pragma access outside a txn.
-        conn = sqlite3.connect(
-            self._db_path, isolation_level=None, timeout=30.0
-        )
+        conn = sqlite3.connect(self._db_path, isolation_level=None, timeout=30.0)
         try:
             (current_version,) = conn.execute("PRAGMA user_version").fetchone()
             if current_version > _SCHEMA_VERSION:
@@ -421,9 +414,7 @@ class MyQueue:
         timeout: float = 75.0,
     ) -> None:
         if not isinstance(host, str):
-            raise ValueError(
-                "host must be a string, got %s" % type(host).__name__
-            )
+            raise ValueError("host must be a string, got %s" % type(host).__name__)
         if not isinstance(port, int) or not (1 <= port <= 65535):
             raise ValueError(
                 "port must be an integer between 1 and 65535, got %r" % port
@@ -431,8 +422,7 @@ class MyQueue:
         if secret_key is not None:
             if not isinstance(secret_key, (bytes, bytearray)):
                 raise ValueError(
-                    "secret_key must be bytes, got %s"
-                    % type(secret_key).__name__
+                    "secret_key must be bytes, got %s" % type(secret_key).__name__
                 )
             if len(secret_key) < 16:
                 raise ValueError("secret_key must be at least 16 bytes")
@@ -446,9 +436,7 @@ class MyQueue:
             raise ValueError("timeout must be > 0")
 
         self._addr: tuple[str, int] = (host, port)
-        self._db_path: Optional[str] = (
-            str(db_path) if db_path is not None else None
-        )
+        self._db_path: Optional[str] = str(db_path) if db_path is not None else None
         self._secret_key: Optional[bytes] = (
             bytes(secret_key) if secret_key is not None else None
         )
@@ -514,9 +502,7 @@ class MyQueue:
             except Exception:
                 pass
 
-        conn = sqlite3.connect(
-            self._db_path, isolation_level=None, timeout=30.0
-        )
+        conn = sqlite3.connect(self._db_path, isolation_level=None, timeout=30.0)
         # WAL mode is persistent in the DB file, but we re-set it because
         # this might be the first open. NORMAL synchronous gives us
         # excellent durability with much higher throughput than FULL.
@@ -566,9 +552,7 @@ class MyQueue:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
             # 2. Reclaim free pages. Drain the cursor — each row is one
             #    page actually being returned to the OS.
-            reclaimed = conn.execute(
-                "PRAGMA incremental_vacuum(1000)"
-            ).fetchall()
+            reclaimed = conn.execute("PRAGMA incremental_vacuum(1000)").fetchall()
             # 3. Truncate the WAL again to flush vacuum's own bookkeeping.
             ckpt = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
             if reclaimed:
@@ -737,9 +721,7 @@ class MyQueue:
 
             try:
                 client_sock.settimeout(self._timeout)
-                client_sock.setsockopt(
-                    socket.IPPROTO_TCP, socket.TCP_NODELAY, 1
-                )
+                client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             except OSError as ex:
                 log.warning("Could not configure accepted socket: %s", ex)
 
@@ -761,9 +743,7 @@ class MyQueue:
         while not self._shutdown.wait(self._reaper_interval):
             # 1. Drop references to finished worker threads.
             with self._worker_threads_lock:
-                self._worker_threads = [
-                    t for t in self._worker_threads if t.is_alive()
-                ]
+                self._worker_threads = [t for t in self._worker_threads if t.is_alive()]
 
             # 2. Delete rows whose created_at is past the TTL cutoff.
             if self._ttl_seconds is not None:
@@ -879,9 +859,7 @@ class MyQueue:
             try:
                 signal.signal(sig, handler)
             except (ValueError, OSError) as ex:
-                log.warning(
-                    "Could not install handler for signal %d: %s", sig, ex
-                )
+                log.warning("Could not install handler for signal %d: %s", sig, ex)
 
     def wait_for_shutdown(self, timeout: Optional[float] = None) -> bool:
         """Block until ``stop_server()`` is invoked (e.g. by a signal
@@ -952,9 +930,7 @@ class MyQueue:
                     return _deserialize(payload)
                 except ValueError as ex:
                     raise ConnectionError(str(ex)) from ex
-            raise ConnectionError(
-                "unexpected response opcode 0x%02x" % resp_opcode[0]
-            )
+            raise ConnectionError("unexpected response opcode 0x%02x" % resp_opcode[0])
 
     def get_consumer(self) -> Any:
         """Pop the next item from the consumer queue.
@@ -983,14 +959,10 @@ class MyQueue:
                 sock = self._ensure_connected_locked()
                 if sock is not None:
                     try:
-                        _Frame.write(
-                            sock, _OP_PUT_PRODUCER, payload, self._secret_key
-                        )
+                        _Frame.write(sock, _OP_PUT_PRODUCER, payload, self._secret_key)
                         return True
                     except Exception as ex:
-                        log.warning(
-                            "Send failed (attempt %d/3): %s", attempt, ex
-                        )
+                        log.warning("Send failed (attempt %d/3): %s", attempt, ex)
                         _close_socket(self._csock)
                         self._csock = None
             sleep(random() * 2)

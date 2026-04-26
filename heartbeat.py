@@ -236,9 +236,7 @@ class Heartbeat:
             )
             return bool(result.stdout.strip())
         except Exception as ex:
-            log.warning(
-                "Unable to check for %s: %s", self._managed_process, ex
-            )
+            log.warning("Unable to check for %s: %s", self._managed_process, ex)
             return False
 
     # ------------------------------------------------------------------ #
@@ -256,8 +254,7 @@ class Heartbeat:
         with self._health_cache_lock:
             if (
                 self._health_cache_value is not None
-                and now - self._health_cache_time
-                < self._health_check_cache_seconds
+                and now - self._health_cache_time < self._health_check_cache_seconds
             ):
                 return self._health_cache_value
 
@@ -311,13 +308,9 @@ class Heartbeat:
                         log.debug("Failed to send state: %s", ex)
                         return
                 elif cmd == self.PROTO_NOTIFY_PRIMARY:
-                    self._set_state(
-                        self.STATE_PRIMARY, reason="peer notification"
-                    )
+                    self._set_state(self.STATE_PRIMARY, reason="peer notification")
                 elif cmd == self.PROTO_NOTIFY_SECONDARY:
-                    self._set_state(
-                        self.STATE_SECONDARY, reason="peer notification"
-                    )
+                    self._set_state(self.STATE_SECONDARY, reason="peer notification")
                 elif cmd == self.PROTO_GOODBYE:
                     log.info("Peer announced graceful departure")
                     self._peer_announced_departure.set()
@@ -357,9 +350,7 @@ class Heartbeat:
 
             try:
                 client_sock.settimeout(self._heartbeat_timeout * 2)
-                client_sock.setsockopt(
-                    socket.IPPROTO_TCP, socket.TCP_NODELAY, 1
-                )
+                client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             except OSError as ex:
                 log.warning("Could not configure accepted socket: %s", ex)
 
@@ -379,9 +370,7 @@ class Heartbeat:
         """Periodically drop references to finished worker threads."""
         while not self._shutdown.wait(10.0):
             with self._worker_threads_lock:
-                self._worker_threads = [
-                    t for t in self._worker_threads if t.is_alive()
-                ]
+                self._worker_threads = [t for t in self._worker_threads if t.is_alive()]
 
     # ------------------------------------------------------------------ #
     # Heartbeat sender (client side)                                     #
@@ -425,9 +414,7 @@ class Heartbeat:
             elapsed_ok = True
         else:
             if self._last_successful_contact is None:
-                elapsed = time.monotonic() - (
-                    self._loop_start_time or time.monotonic()
-                )
+                elapsed = time.monotonic() - (self._loop_start_time or time.monotonic())
             else:
                 elapsed = time.monotonic() - self._last_successful_contact
             elapsed_ok = elapsed >= self._failover_grace
@@ -543,14 +530,10 @@ class Heartbeat:
             my = self._state
             stable = (
                 my == self.STATE_PRIMARY and peer_state == self.STATE_SECONDARY
-            ) or (
-                my == self.STATE_SECONDARY and peer_state == self.STATE_PRIMARY
-            )
+            ) or (my == self.STATE_SECONDARY and peer_state == self.STATE_PRIMARY)
             if stable:
                 return
-            new_state, reason = self._decide_election(
-                my, peer_state, local_running
-            )
+            new_state, reason = self._decide_election(my, peer_state, local_running)
 
         # Apply outside the lock: _set_state acquires it again briefly and
         # fires on_state_change. Returns False if state was already `new_state`
@@ -596,9 +579,7 @@ class Heartbeat:
 
         # Initial state probe: if local server isn't running, start as S.
         if not self._is_local_server_running():
-            self._set_state(
-                self.STATE_SECONDARY, reason="local server not running"
-            )
+            self._set_state(self.STATE_SECONDARY, reason="local server not running")
 
         valid_states = {
             self.STATE_PRIMARY,
@@ -805,25 +786,19 @@ class Heartbeat:
             try:
                 signal.signal(sig, stop_handler)
             except (ValueError, OSError) as ex:
-                log.warning(
-                    "Could not install handler for signal %d: %s", sig, ex
-                )
+                log.warning("Could not install handler for signal %d: %s", sig, ex)
 
         if install_dump:
             sigusr1 = getattr(signal, "SIGUSR1", None)
             if sigusr1 is not None:
 
                 def dump_handler(signum: int, _frame) -> None:
-                    log.info(
-                        "SIGUSR1 received — state dump:\n%s", self.dump_state()
-                    )
+                    log.info("SIGUSR1 received — state dump:\n%s", self.dump_state())
 
                 try:
                     signal.signal(sigusr1, dump_handler)
                 except (ValueError, OSError) as ex:
-                    log.warning(
-                        "Could not install SIGUSR1 dump handler: %s", ex
-                    )
+                    log.warning("Could not install SIGUSR1 dump handler: %s", ex)
 
     def dump_state(self) -> str:
         """Multi-line summary of current internals, intended for ops

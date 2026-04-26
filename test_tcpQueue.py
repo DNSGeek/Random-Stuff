@@ -27,9 +27,7 @@ from time import sleep
 sys.path.insert(0, "/home/claude")
 from tcpQueue import MyQueue
 
-logging.basicConfig(
-    level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s"
-)
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
 KEY = secrets.token_bytes(32)
 
@@ -220,10 +218,7 @@ def test_thread_safety():
             except Exception as ex:
                 errors.append(ex)
 
-        threads = [
-            threading.Thread(target=worker, args=(t,))
-            for t in range(N_THREADS)
-        ]
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(N_THREADS)]
         for t in threads:
             t.start()
         for t in threads:
@@ -477,9 +472,7 @@ def test_schema_version_check():
             MyQueue("127.0.0.1", port, db_path=db_path, secret_key=KEY)
             assert False, "should have refused future-schema DB"
         except RuntimeError as ex:
-            assert "newer than this code supports" in str(
-                ex
-            ), f"wrong message: {ex}"
+            assert "newer than this code supports" in str(ex), f"wrong message: {ex}"
             print(f"  OK: refused DB with future schema version ({ex})")
     finally:
         db.cleanup()
@@ -513,9 +506,7 @@ def test_autovacuum_set_on_fresh_db():
     import sqlite3
 
     db = _DbBox()
-    server = MyQueue(
-        "127.0.0.1", PORTS.get(), db_path=db.path(), secret_key=KEY
-    )
+    server = MyQueue("127.0.0.1", PORTS.get(), db_path=db.path(), secret_key=KEY)
     try:
         conn = sqlite3.connect(str(db.path()))
         try:
@@ -591,15 +582,11 @@ def test_wal_truncate():
         sleep(0.1)
 
         wal_path = str(db_path) + "-wal"
-        wal_before = (
-            os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
-        )
+        wal_before = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
 
         server.compact()
 
-        wal_after = (
-            os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
-        )
+        wal_after = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
 
         assert (
             wal_after < 100
@@ -658,9 +645,7 @@ def test_legacy_db_warns():
         relevant = [w for w in warnings_seen if "auto_vacuum" in w]
         assert relevant, f"no auto_vacuum warning: {warnings_seen}"
         # Sanity check the message includes the migration command
-        assert (
-            "VACUUM" in relevant[0]
-        ), f"warning lacks migration hint: {relevant[0]}"
+        assert "VACUUM" in relevant[0], f"warning lacks migration hint: {relevant[0]}"
         print("  OK: legacy DB triggered migration warning")
     finally:
         db.cleanup()

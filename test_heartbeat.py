@@ -18,9 +18,7 @@ from time import monotonic, sleep
 sys.path.insert(0, "/home/claude")
 from heartbeat import Heartbeat
 
-logging.basicConfig(
-    level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s"
-)
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
 
 class _PortBox:
@@ -60,12 +58,8 @@ def _make_pair(port_a, port_b, **kwargs):
     )
     defaults.update(kwargs)
 
-    a = Heartbeat(
-        "127.0.0.1", "127.0.0.1", port=port_a, peer_port=port_b, **defaults
-    )
-    b = Heartbeat(
-        "127.0.0.1", "127.0.0.1", port=port_b, peer_port=port_a, **defaults
-    )
+    a = Heartbeat("127.0.0.1", "127.0.0.1", port=port_a, peer_port=port_b, **defaults)
+    b = Heartbeat("127.0.0.1", "127.0.0.1", port=port_b, peer_port=port_a, **defaults)
     return a, b
 
 
@@ -77,9 +71,7 @@ def test_two_nodes_converge():
     a.start()
     b.start()
     try:
-        ok = _wait_for(
-            lambda: {a.get_state(), b.get_state()} == {"P", "S"}, timeout=10
-        )
+        ok = _wait_for(lambda: {a.get_state(), b.get_state()} == {"P", "S"}, timeout=10)
         assert ok, f"never converged: a={a.get_state()} b={b.get_state()}"
         # Lower port should be Primary by deterministic rule.
         assert (
@@ -161,12 +153,8 @@ def test_rejoin_after_failover():
                 lambda: a2.get_state() == "S" and b.get_state() == "P",
                 timeout=10,
             )
-            assert (
-                ok
-            ), f"didn't reconcile: a2={a2.get_state()} b={b.get_state()}"
-            print(
-                "  OK: rejoining node accepted Secondary; b kept Primary (sticky)"
-            )
+            assert ok, f"didn't reconcile: a2={a2.get_state()} b={b.get_state()}"
+            print("  OK: rejoining node accepted Secondary; b kept Primary (sticky)")
         finally:
             a2.stop()
     finally:
@@ -245,15 +233,11 @@ def test_both_unhealthy_no_cascade():
         # Give them time to settle and run several heartbeat cycles
         sleep(2.0)
         snapshots = [
-            (a.get_state(), b.get_state())
-            for _ in range(10)
-            for _ in [sleep(0.1)]
+            (a.get_state(), b.get_state()) for _ in range(10) for _ in [sleep(0.1)]
         ]
         unique = set(snapshots)
         assert unique == {("S", "S")}, f"flapped or wrong state: {unique}"
-        print(
-            f"  OK: both stayed S across {len(snapshots)} snapshots, no cascade"
-        )
+        print(f"  OK: both stayed S across {len(snapshots)} snapshots, no cascade")
     finally:
         a.stop()
         b.stop()
@@ -309,9 +293,7 @@ def test_invalid_peer_byte_drops_connection():
         sleep(0.5)
         # Real proof: a's csock should have been dropped after the bad byte
         with a._csock_lock:
-            assert (
-                a._csock is None
-            ), "expected csock to be invalidated after junk byte"
+            assert a._csock is None, "expected csock to be invalidated after junk byte"
         print("  OK: junk peer byte caused connection drop")
     finally:
         a.stop()
@@ -387,9 +369,7 @@ def test_state_change_callback_fires():
         # Final transitions should land at the converged states.
         assert transitions_a[-1][1] == a.get_state()
         assert transitions_b[-1][1] == b.get_state()
-        print(
-            f"  OK: callbacks fired (a: {transitions_a}, b: {transitions_b})"
-        )
+        print(f"  OK: callbacks fired (a: {transitions_a}, b: {transitions_b})")
     finally:
         a.stop()
         b.stop()
@@ -459,9 +439,7 @@ def test_graceful_goodbye_skips_grace_period():
         # b should promote within a couple seconds, not after GRACE.
         ok = _wait_for(lambda: b.get_state() == "P", timeout=GRACE / 2)
         elapsed = monotonic() - t0
-        assert (
-            ok
-        ), f"b never promoted within {GRACE/2:.1f}s; elapsed={elapsed:.1f}s"
+        assert ok, f"b never promoted within {GRACE/2:.1f}s; elapsed={elapsed:.1f}s"
         assert elapsed < GRACE, (
             f"b promoted at {elapsed:.1f}s but grace was {GRACE}s — "
             f"goodbye notification didn't bypass grace"
