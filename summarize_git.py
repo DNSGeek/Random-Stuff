@@ -67,7 +67,7 @@ def pull_ai(text: str, session: requests.Session) -> str:
             {
                 "role": "user",
                 "content": (
-                    "Please write a concise 2 to 3 sentence summary of the following document.\n\n"
+                    "Please write a single paragraph summary of the following document. Use only plain text, not markdown.\n\n"
                     + text
                 ),
             },
