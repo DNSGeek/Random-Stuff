@@ -8,10 +8,10 @@ import requests
 
 # LM Studio endpoint — adjust if your server runs elsewhere
 LLM_URL: str = "http://127.0.0.1:1234/v1/chat/completions"
-LLM_MODEL: str = "openai/gpt-oss-20b"
+LLM_MODEL: str = "qwen/qwen3.6-35b-a3b"
 
 # Max characters of README content to send to the LLM
-README_LIMIT: int = 10240
+README_LIMIT: int = 65536
 
 # Seconds to wait for the LLM before giving up
 LLM_TIMEOUT: int = 60
@@ -81,7 +81,7 @@ def pull_ai(text: str, session: requests.Session) -> str:
         )
         response.raise_for_status()
         resp_json: dict[str, Any] = response.json()
-        return str(resp_json["choices"][0]["message"]["content"])
+        return str(resp_json["choices"][0]["message"]["content"]).strip()
     except requests.exceptions.Timeout:
         stderr.write(f"\n[error] LLM request timed out after {LLM_TIMEOUT}s\n")
         return ""
