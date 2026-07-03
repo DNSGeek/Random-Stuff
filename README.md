@@ -51,13 +51,13 @@ If you only look at a few things, make it these:
 
 Tools for collecting, exposing, and visualizing host metrics.
 
-| Script | What it does |
-| ------ | ------------ |
-| [`linux_sys_stats.py`](linux_sys_stats.py) | Pulls relevant system stats on Linux (via `top`) and prints them. |
-| [`mac_sys_stats.py`](mac_sys_stats.py) | The macOS counterpart — same idea, tuned for `top -l 1`. |
-| [`sys_stats_api.py`](sys_stats_api.py) | A tiny Flask REST wrapper that serves the `*_sys_stats.py` output as JSON (auto-selects Linux/macOS at runtime). |
-| [`web_stats.py`](web_stats.py) | Polls multiple hosts, consolidates their stats, and renders graphs with matplotlib. |
-| [`checkmedia.py`](checkmedia.py) | Recursively hashes every file in a directory (multithreaded, SQLite-backed) to detect if anything has been modified. |
+| Script                                     | What it does                                                                                                         |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| [`linux_sys_stats.py`](linux_sys_stats.py) | Pulls relevant system stats on Linux (via `top`) and prints them.                                                    |
+| [`mac_sys_stats.py`](mac_sys_stats.py)     | The macOS counterpart — same idea, tuned for `top -l 1`.                                                             |
+| [`sys_stats_api.py`](sys_stats_api.py)     | A tiny Flask REST wrapper that serves the `*_sys_stats.py` output as JSON (auto-selects Linux/macOS at runtime).     |
+| [`web_stats.py`](web_stats.py)             | Polls multiple hosts, consolidates their stats, and renders graphs with matplotlib.                                  |
+| [`checkmedia.py`](checkmedia.py)           | Recursively hashes every file in a directory (multithreaded, SQLite-backed) to detect if anything has been modified. |
 
 **Quick look — serve stats as JSON:**
 
@@ -70,21 +70,21 @@ python3 sys_stats_api.py   # then GET the endpoint it exposes
 
 ## Networking & Distributed Computing
 
-| Script | What it does |
-| ------ | ------------ |
-| [`tcpQueue.py`](tcpQueue.py) | Durable, crash-safe bidirectional message queue over TCP. Frames are length-prefixed with per-message opcodes and optional HMAC-SHA256 auth; queues persist to a WAL-mode SQLite DB. |
-| [`heartbeat.py`](heartbeat.py) | Two-node active/standby failover daemon. Uses a deterministic `(ip, port)` election rule to avoid split-brain, with a state-change callback hook for VIP/service takeover. |
-| [`quova.py`](quova.py) | An early Python 3 emulator of the Quova GeoIP protocol, backed by the MaxMind GeoLiteCity database. |
+| Script                         | What it does                                                                                                                                                                         |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`tcpQueue.py`](tcpQueue.py)   | Durable, crash-safe bidirectional message queue over TCP. Frames are length-prefixed with per-message opcodes and optional HMAC-SHA256 auth; queues persist to a WAL-mode SQLite DB. |
+| [`heartbeat.py`](heartbeat.py) | Two-node active/standby failover daemon. Uses a deterministic `(ip, port)` election rule to avoid split-brain, with a state-change callback hook for VIP/service takeover.           |
+| [`quova.py`](quova.py)         | An early Python 3 emulator of the Quova GeoIP protocol, backed by the MaxMind GeoLiteCity database.                                                                                  |
 
 ---
 
 ## Security & Cryptography
 
-| Script | What it does |
-| ------ | ------------ |
+| Script                                 | What it does                                                                                                                                              |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`cookieMonster.py`](cookieMonster.py) | Encrypts/decrypts arbitrary data for transport inside HTTP cookies using Fernet, splitting and interleaving the key with the ciphertext (base85-encoded). |
-| [`genpw.py`](genpw.py) | Generates memorable passphrases by combining multiple random words. |
-| [`checkmedia.py`](checkmedia.py) | File-integrity monitor — detects tampering by comparing content hashes against a saved baseline. |
+| [`genpw.py`](genpw.py)                 | Generates memorable passphrases by combining multiple random words.                                                                                       |
+| [`checkmedia.py`](checkmedia.py)       | File-integrity monitor — detects tampering by comparing content hashes against a saved baseline.                                                          |
 
 > ⚠️ These tools are provided as-is. Review the code and the [Security Policy](SECURITY.md)
 > before relying on them for anything sensitive.
@@ -96,9 +96,9 @@ python3 sys_stats_api.py   # then GET the endpoint it exposes
 Both talk to a local, OpenAI-compatible endpoint (e.g. [LM Studio](https://lmstudio.ai/)
 at `http://127.0.0.1:1234`) — no data leaves your machine.
 
-| Script | What it does |
-| ------ | ------------ |
-| [`summarize_git.py`](summarize_git.py) | Uses a local LLM to generate a concise summary of a Git repository. |
+| Script                                         | What it does                                                                                                                                          |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`summarize_git.py`](summarize_git.py)         | Uses a local LLM to generate a concise summary of a Git repository.                                                                                   |
 | [`summarize_readmes.py`](summarize_readmes.py) | Walks subdirectories, feeds their READMEs to a local LLM, and produces a combined summary — sizing input to the model's context window automatically. |
 
 ---
@@ -121,20 +121,20 @@ python3 index.py            # serves on port 8080 by default
 
 ## Retro & Fun
 
-| Item | What it does |
-| ---- | ------------ |
-| [`paravia.c`](paravia.c) | A C implementation of the classic *Santa Paravia en Fiumaccio* medieval city-management game. |
-| [`pong.py`](pong.py) | A [MicroPython](https://micropython.org/) badge app for the [Pimoroni Tufty 2040](https://shop.pimoroni.com/products/tufty-2040) — displays your name and an animated game of Pong. |
-| [`random_cow.py`](random_cow.py) | Picks a random `cowsay` cow, grabs a `fortune`, and prints the two together. |
-| [`vushta.py`](vushta.py) | Generates a random "Forbidden Delight" — an homage to the pleasures of the City of Vushta. |
+| Item                             | What it does                                                                                                                                                                        |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`paravia.c`](paravia.c)         | A C implementation of the classic _Santa Paravia en Fiumaccio_ medieval city-management game.                                                                                       |
+| [`pong.py`](pong.py)             | A [MicroPython](https://micropython.org/) badge app for the [Pimoroni Tufty 2040](https://shop.pimoroni.com/products/tufty-2040) — displays your name and an animated game of Pong. |
+| [`random_cow.py`](random_cow.py) | Picks a random `cowsay` cow, grabs a `fortune`, and prints the two together.                                                                                                        |
+| [`vushta.py`](vushta.py)         | Generates a random "Forbidden Delight" — an homage to the pleasures of the City of Vushta.                                                                                          |
 
 ---
 
 ## Shared Libraries & Dotfiles
 
-| Item | What it does |
-| ---- | ------------ |
-| [`myfuncs.py`](myfuncs.py) | A grab-bag of small utility helpers (timing decorators, timeouts, etc.) reused across the other scripts. |
+| Item                         | What it does                                                                                                                                                                                             |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`myfuncs.py`](myfuncs.py)   | A grab-bag of small utility helpers (timing decorators, timeouts, etc.) reused across the other scripts.                                                                                                 |
 | [`pythonrc.py`](pythonrc.py) | An enhanced, optimized Python interactive-shell startup file — colored prompts, history, tab completion, source listing, and more. Based on [lonetwin's pythonrc](https://github.com/lonetwin/pythonrc). |
 
 **Use the enhanced interactive shell:**
@@ -159,13 +159,13 @@ cd Random-Stuff
 
 Common third-party dependencies, by tool:
 
-| Dependency | Used by |
-| ---------- | ------- |
-| `cryptography` | `cookieMonster.py`, `PyWebApp/` |
-| `flask` | `sys_stats_api.py` |
-| `matplotlib`, `requests` | `web_stats.py`, `summarize_git.py` |
-| `cherrypy`, `django` | `PyWebApp/` |
-| `python-daemon`, `pygeoip` | `quova.py` |
+| Dependency                 | Used by                            |
+| -------------------------- | ---------------------------------- |
+| `cryptography`             | `cookieMonster.py`, `PyWebApp/`    |
+| `flask`                    | `sys_stats_api.py`                 |
+| `matplotlib`, `requests`   | `web_stats.py`, `summarize_git.py` |
+| `cherrypy`, `django`       | `PyWebApp/`                        |
+| `python-daemon`, `pygeoip` | `quova.py`                         |
 
 Install what a given tool needs, e.g.:
 
