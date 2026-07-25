@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Bidirectional TCP message queue with on-disk durability.
 
@@ -24,6 +23,16 @@ with a ``secret_key``.
 Opcodes are byte values >= 0x10, which guarantees they cannot collide with
 the first byte of a zlib stream (always 0x78) or with any printable ASCII
 character.
+
+Every request frame gets exactly one response frame, so the protocol is
+strictly request/response and never pipelined:
+
+* ``_OP_GET_*``     -> ``_OP_ITEM`` or ``_OP_EMPTY``
+* ``_OP_PUT_PRODUCER`` -> ``_OP_ACK`` (sent only after the row is committed)
+
+Because the client retries a put whose ACK never arrives, delivery is
+at-least-once: a message can be stored twice if the ACK is lost after the
+commit. Make consumers idempotent if that matters to you.
 
 Serialization
 -------------
@@ -59,7 +68,7 @@ and:
 2. If ``ttl_seconds`` is set, deletes rows whose ``created_at`` is older
    than ``time.time() - ttl_seconds``.
 3. Compacts the DB: returns free pages to the OS via
-   ``incremental_vacuum`` (up to 100 pages per pass) and truncates the
+   ``incremental_vacuum`` (up to 1000 pages per pass) and truncates the
    WAL file via ``wal_checkpoint(TRUNCATE)``. Without this step, the
    ``.db`` file would grow to the high-water mark of every burst it ever
    saw, even after rows are deleted; SQLite reuses freed pages but
@@ -88,7 +97,9 @@ Concurrency
 WAL mode allows concurrent readers and a single writer. Each thread opens
 its own SQLite connection lazily; connections are cached in
 ``threading.local`` storage and reused across operations on the same
-thread.
+thread. Read-only operations run without a transaction (WAL readers never
+block and never take the writer lock); mutating operations run inside
+``BEGIN IMMEDIATE``.
 
 The producer queue is read by clients over TCP and written by clients
 over TCP, so all access is serialized through the server's worker
@@ -106,6 +117,10 @@ Always construct with ``secret_key=secrets.token_bytes(32)`` (or longer).
 With a key set, every frame is HMAC-SHA256 signed on send and verified on
 receive. Without a key, anyone who can connect can inject arbitrary
 messages; a loud warning is logged.
+
+Frames are also bounded: the ASCII length prefix may not exceed
+``_MAX_HEADER_BYTES`` and the body may not exceed ``_MAX_FRAME_BYTES``,
+so a hostile peer cannot make the process allocate unbounded memory.
 
 Signals
 -------
@@ -137,8 +152,8 @@ Public API
 
 ``send_to_consumer(blob)`` / ``send_to_producer(blob)``
     Push an item. ``send_to_consumer`` is server-side and writes
-    directly to the DB; ``send_to_producer`` is client-side and goes
-    over the wire.
+    directly to the DB; ``send_to_producer`` is client-side, goes over
+    the wire and waits for the server's ACK.
 
 ``consumer_size()`` / ``producer_size()`` / ``consumer_empty()`` /
 ``producer_empty()`` / ``clear_queues()``
@@ -164,12 +179,13 @@ import sqlite3
 import threading
 import time
 import zlib
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from queue import Empty
 from random import random
 from time import sleep
-from typing import Any, Iterator, Optional, Union
+from typing import Any
 
 log = logging.getLogger("pyTCPQueue")
 
@@ -177,14 +193,17 @@ log = logging.getLogger("pyTCPQueue")
 # Wire-protocol opcodes. Each opcode is a single byte. Using bytes >= 0x10
 # guarantees these will never collide with the first byte of a zlib stream
 # (always 0x78) nor with any printable ASCII character.
-_OP_GET_CONSUMER: bytes = b"\x01"  # client -> server: give me a consumer item
-_OP_GET_PRODUCER: bytes = b"\x02"  # client -> server: give me a producer item
-_OP_PUT_PRODUCER: bytes = b"\x03"  # client -> server: enqueue payload to producer queue
-_OP_ITEM: bytes = b"\x10"  # server -> client: here is an item (payload follows)
-_OP_EMPTY: bytes = b"\x11"  # server -> client: queue was empty (no payload)
+_OP_GET_CONSUMER: bytes = b"\x10"  # client -> server: give me a consumer item
+_OP_GET_PRODUCER: bytes = b"\x11"  # client -> server: give me a producer item
+_OP_PUT_PRODUCER: bytes = b"\x12"  # client -> server: enqueue payload to producer queue
+_OP_ITEM: bytes = b"\x20"  # server -> client: here is an item (payload follows)
+_OP_EMPTY: bytes = b"\x21"  # server -> client: queue was empty (no payload)
+_OP_ACK: bytes = b"\x22"  # server -> client: put committed to disk
 
 _HMAC_SIZE: int = 32  # HMAC-SHA256 digest length, in bytes
 _MAX_HEADER_BYTES: int = 16  # generous cap on the ASCII length prefix
+_MAX_FRAME_BYTES: int = 64 * 1024 * 1024  # hard cap on a single frame body
+_RECV_CHUNK: int = 65536  # max bytes requested per recv() call
 
 # Whitelist of valid table names. We do interpolate table names into SQL
 # strings (sqlite3 placeholders don't work for table names), so the names
@@ -202,7 +221,7 @@ _SCHEMA_VERSION = 1
 # --------------------------------------------------------------------------- #
 
 
-def _close_socket(sock: Optional[socket.socket]) -> None:
+def _close_socket(sock: socket.socket | None) -> None:
     """Best-effort shutdown and close of a socket."""
     if sock is None:
         return
@@ -230,7 +249,7 @@ def _deserialize(data: bytes) -> Any:
     """Inverse of ``_serialize``. Raises ``ValueError`` on malformed input."""
     try:
         return json.loads(zlib.decompress(data).decode("utf-8"))
-    except (zlib.error, UnicodeDecodeError, json.JSONDecodeError) as ex:
+    except (zlib.error, UnicodeDecodeError, ValueError) as ex:
         raise ValueError("malformed payload: %s" % ex) from ex
 
 
@@ -242,54 +261,61 @@ class _Frame:
         sock: socket.socket,
         opcode: bytes,
         payload: bytes,
-        secret_key: Optional[bytes],
+        secret_key: bytes | None,
     ) -> None:
         body = opcode + payload
         if secret_key:
             body += hmac.new(secret_key, body, hashlib.sha256).digest()
-        sock.sendall(str(len(body)).encode() + b":" + body)
+        if len(body) > _MAX_FRAME_BYTES:
+            raise ValueError(
+                "frame too large: %d bytes (max %d)" % (len(body), _MAX_FRAME_BYTES)
+            )
+        sock.sendall(str(len(body)).encode("ascii") + b":" + body)
 
     @staticmethod
     def read(
-        sock: socket.socket, secret_key: Optional[bytes]
-    ) -> Optional[tuple[bytes, bytes]]:
+        sock: socket.socket, secret_key: bytes | None
+    ) -> tuple[bytes, bytes] | None:
         """Return ``(opcode, payload)`` or ``None`` if the peer closed the
         connection cleanly with no data buffered. Raises ``ValueError`` for
         any malformed or unauthenticated frame."""
-        # Read the ASCII length header up to and including the colon. We
-        # buffer rather than recv-ing one byte at a time.
+        # Read the ASCII length header one byte at a time, stopping at the
+        # colon. Reading in larger chunks would consume bytes belonging to
+        # the *next* frame, which this stateless reader has nowhere to put.
         header = bytearray()
-        while b":" not in header:
-            remaining = _MAX_HEADER_BYTES - len(header)
-            if remaining <= 0:
-                raise ValueError(
-                    "header exceeds %d bytes; no colon found" % _MAX_HEADER_BYTES
-                )
-            chunk = sock.recv(remaining)
+        while True:
+            chunk = sock.recv(1)
             if not chunk:
                 if not header:
                     return None  # clean close before any data arrived
                 raise ValueError("connection closed mid-header")
+            if chunk == b":":
+                break
             header.extend(chunk)
+            if len(header) > _MAX_HEADER_BYTES:
+                raise ValueError(
+                    "header exceeds %d bytes; no colon found" % _MAX_HEADER_BYTES
+                )
 
-        colon_idx = header.index(b":")
-        length_str = bytes(header[:colon_idx])
-        body_so_far = bytearray(header[colon_idx + 1 :])
-
-        try:
-            length = int(length_str)
-        except ValueError:
+        length_str = bytes(header)
+        if not length_str.isdigit():
             raise ValueError("non-numeric length: %r" % length_str)
+        length = int(length_str)
         if length < 1:
             raise ValueError("frame too short: length=%d" % length)
+        if length > _MAX_FRAME_BYTES:
+            raise ValueError(
+                "frame too large: %d bytes (max %d)" % (length, _MAX_FRAME_BYTES)
+            )
 
-        while len(body_so_far) < length:
-            chunk = sock.recv(length - len(body_so_far))
+        body_buf = bytearray()
+        while len(body_buf) < length:
+            chunk = sock.recv(min(length - len(body_buf), _RECV_CHUNK))
             if not chunk:
                 raise ValueError("connection closed mid-body")
-            body_so_far.extend(chunk)
+            body_buf.extend(chunk)
 
-        body = bytes(body_so_far)
+        body = bytes(body_buf)
 
         if secret_key:
             if len(body) < _HMAC_SIZE + 1:
@@ -322,6 +348,11 @@ class MyQueue:
         Verifies the on-disk schema version isn't newer than what this code
         understands (which would risk silent corruption), and stamps the
         version on a fresh DB."""
+        # Make sure the containing directory exists, otherwise sqlite3 fails
+        # with an opaque "unable to open database file".
+        parent = Path(self._db_path).expanduser().resolve().parent
+        parent.mkdir(parents=True, exist_ok=True)
+
         # Open a dedicated connection for setup, separate from _open_db's
         # thread-local cache. We need direct pragma access outside a txn.
         conn = sqlite3.connect(self._db_path, isolation_level=None, timeout=30.0)
@@ -348,7 +379,11 @@ class MyQueue:
                 # auto_vacuum=INCREMENTAL takes effect only on a virgin DB.
                 # Once set, subsequent deletes free pages to a tracked list
                 # which `PRAGMA incremental_vacuum` can later return to OS.
+                # The VACUUM makes the new setting stick even if the file
+                # already has a header page; it is a no-op cost on an empty
+                # database. It must happen before journal_mode=WAL.
                 conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+                conn.execute("VACUUM")
             else:
                 (av_mode,) = conn.execute("PRAGMA auto_vacuum").fetchone()
                 if av_mode != 2:  # 2 == INCREMENTAL
@@ -390,7 +425,10 @@ class MyQueue:
                 conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
                 conn.execute("COMMIT")
             except Exception:
-                conn.execute("ROLLBACK")
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
                 raise
         finally:
             conn.close()
@@ -400,16 +438,20 @@ class MyQueue:
         host: str = "127.0.0.1",
         port: int = 49152,
         *,
-        db_path: Optional[Union[str, Path]] = None,
-        secret_key: Optional[bytes] = None,
+        db_path: str | Path | None = None,
+        secret_key: bytes | None = None,
         max_queue_size: int = 10_000,
-        ttl_seconds: Optional[float] = None,
+        ttl_seconds: float | None = None,
         reaper_interval: float = 60.0,
         timeout: float = 75.0,
     ) -> None:
         if not isinstance(host, str):
             raise ValueError("host must be a string, got %s" % type(host).__name__)
-        if not isinstance(port, int) or not (1 <= port <= 65535):
+        if (
+            isinstance(port, bool)
+            or not isinstance(port, int)
+            or not (1 <= port <= 65535)
+        ):
             raise ValueError(
                 "port must be an integer between 1 and 65535, got %r" % port
             )
@@ -420,6 +462,11 @@ class MyQueue:
                 )
             if len(secret_key) < 16:
                 raise ValueError("secret_key must be at least 16 bytes")
+        if isinstance(max_queue_size, bool) or not isinstance(max_queue_size, int):
+            raise ValueError(
+                "max_queue_size must be an integer, got %s"
+                % type(max_queue_size).__name__
+            )
         if max_queue_size < 1:
             raise ValueError("max_queue_size must be >= 1")
         if ttl_seconds is not None and ttl_seconds <= 0:
@@ -430,12 +477,12 @@ class MyQueue:
             raise ValueError("timeout must be > 0")
 
         self._addr: tuple[str, int] = (host, port)
-        self._db_path: Optional[str] = str(db_path) if db_path is not None else None
-        self._secret_key: Optional[bytes] = (
+        self._db_path: str | None = str(db_path) if db_path is not None else None
+        self._secret_key: bytes | None = (
             bytes(secret_key) if secret_key is not None else None
         )
         self._max_queue_size: int = max_queue_size
-        self._ttl_seconds: Optional[float] = ttl_seconds
+        self._ttl_seconds: float | None = ttl_seconds
         self._reaper_interval: float = reaper_interval
         self._timeout: float = timeout
 
@@ -448,13 +495,13 @@ class MyQueue:
         self._worker_threads: list[threading.Thread] = []
         self._worker_threads_lock = threading.Lock()
         self._shutdown = threading.Event()
-        self._ssock: Optional[socket.socket] = None
-        self._listen_thread: Optional[threading.Thread] = None
-        self._maintenance_thread: Optional[threading.Thread] = None
+        self._ssock: socket.socket | None = None
+        self._listen_thread: threading.Thread | None = None
+        self._maintenance_thread: threading.Thread | None = None
 
         # Client-side state.
-        self._csock: Optional[socket.socket] = None
-        self._csock_lock = threading.Lock()
+        self._csock: socket.socket | None = None
+        self._csock_lock = threading.RLock()
 
         # Initialize the DB schema if a path was provided. Doing this here
         # (rather than lazily on first use) surfaces permission / disk
@@ -495,6 +542,10 @@ class MyQueue:
                 cached.close()
             except Exception:
                 pass
+        # Drop the stale entries *before* connecting: if connect() raises we
+        # must not leave a closed connection cached.
+        self._tls.conn = None
+        self._tls.path = None
 
         conn = sqlite3.connect(self._db_path, isolation_level=None, timeout=30.0)
         # WAL mode is persistent in the DB file, but we re-set it because
@@ -507,10 +558,21 @@ class MyQueue:
         self._tls.path = self._db_path
         return conn
 
+    def close_db(self) -> None:
+        """Close this thread's cached SQLite connection, if any."""
+        conn = getattr(self._tls, "conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._tls.conn = None
+        self._tls.path = None
+
     @contextmanager
     def _db_txn(self) -> Iterator[sqlite3.Connection]:
-        """Context manager that opens a transaction, commits on success,
-        rolls back on exception."""
+        """Context manager that opens a write transaction, commits on
+        success, rolls back on exception."""
         conn = self._open_db()
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -522,7 +584,14 @@ class MyQueue:
                 pass
             raise
         else:
-            conn.execute("COMMIT")
+            try:
+                conn.execute("COMMIT")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
 
     def _db_compact(self) -> None:
         """Reclaim free pages back to the OS and truncate the WAL file.
@@ -574,51 +643,62 @@ class MyQueue:
         """Insert one row, evicting the oldest if we're at capacity."""
         if table not in _TABLES:
             raise ValueError("unknown table: %s" % table)
+        if not payload:
+            raise ValueError("refusing to enqueue an empty payload")
         now = time.time()
         with self._db_txn() as conn:
             (count,) = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
-            if count >= self._max_queue_size:
+            # Evict as many as needed so that after the insert we are at
+            # most at max_queue_size (a single delete is not enough if the
+            # table somehow grew past the limit).
+            overflow = count - self._max_queue_size + 1
+            if overflow > 0:
                 log.warning(
-                    "%s queue at capacity (%d); dropping oldest",
+                    "%s queue at capacity (%d); dropping %d oldest",
                     table,
                     self._max_queue_size,
+                    overflow,
                 )
                 conn.execute(
                     f"DELETE FROM {table} "
-                    f"WHERE id = (SELECT id FROM {table} ORDER BY id LIMIT 1)"
+                    f"WHERE id IN (SELECT id FROM {table} ORDER BY id LIMIT ?)",
+                    (overflow,),
                 )
             conn.execute(
                 f"INSERT INTO {table} (payload, created_at) VALUES (?, ?)",
                 (payload, now),
             )
 
-    def _dequeue(self, table: str) -> Optional[bytes]:
+    def _dequeue(self, table: str) -> bytes | None:
         """Atomically pop the oldest row's payload. Returns None if empty.
         Uses ``DELETE ... RETURNING`` (SQLite >= 3.35, March 2021)."""
         if table not in _TABLES:
             raise ValueError("unknown table: %s" % table)
         with self._db_txn() as conn:
-            row = conn.execute(
+            # The cursor MUST be drained: with RETURNING, SQLite only
+            # guarantees the row is deleted once the statement has been
+            # stepped to completion.
+            rows = conn.execute(
                 f"DELETE FROM {table} "
                 f"WHERE id = (SELECT id FROM {table} ORDER BY id LIMIT 1) "
                 f"RETURNING payload"
-            ).fetchone()
-            return row[0] if row else None
+            ).fetchall()
+            return rows[0][0] if rows else None
 
     def _table_size(self, table: str) -> int:
         if table not in _TABLES:
             raise ValueError("unknown table: %s" % table)
-        with self._db_txn() as conn:
-            (count,) = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
-            return count
+        conn = self._open_db()  # read-only: no writer lock needed
+        (count,) = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+        return count
 
     def _table_empty(self, table: str) -> bool:
         """O(1) emptiness check, unlike COUNT(*)."""
         if table not in _TABLES:
             raise ValueError("unknown table: %s" % table)
-        with self._db_txn() as conn:
-            row = conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
-            return row is None
+        conn = self._open_db()  # read-only: no writer lock needed
+        row = conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+        return row is None
 
     def _table_clear(self, table: str) -> None:
         if table not in _TABLES:
@@ -626,15 +706,15 @@ class MyQueue:
         with self._db_txn() as conn:
             conn.execute(f"DELETE FROM {table}")
 
-    def _table_peek(self, table: str) -> Optional[bytes]:
+    def _table_peek(self, table: str) -> bytes | None:
         """Return the oldest payload without removing it. None if empty."""
         if table not in _TABLES:
             raise ValueError("unknown table: %s" % table)
-        with self._db_txn() as conn:
-            row = conn.execute(
-                f"SELECT payload FROM {table} ORDER BY id LIMIT 1"
-            ).fetchone()
-            return row[0] if row else None
+        conn = self._open_db()  # read-only: no writer lock needed
+        row = conn.execute(
+            f"SELECT payload FROM {table} ORDER BY id LIMIT 1"
+        ).fetchone()
+        return row[0] if row else None
 
     def _reap_expired(self) -> dict[str, int]:
         """Delete rows older than ``ttl_seconds``. Returns counts per table."""
@@ -667,6 +747,10 @@ class MyQueue:
                 except ValueError as ex:
                     log.warning("Closing connection: %s", ex)
                     return
+                except TimeoutError:
+                    # Idle client; keep the connection open unless we are
+                    # shutting down.
+                    continue
                 if frame is None:
                     return
                 opcode, payload = frame
@@ -676,7 +760,13 @@ class MyQueue:
                 elif opcode == _OP_GET_PRODUCER:
                     self._respond_with_item(client_sock, "producer")
                 elif opcode == _OP_PUT_PRODUCER:
+                    if not payload:
+                        log.warning("Empty PUT payload; closing connection")
+                        return
                     self._enqueue("producer", payload)
+                    # ACK only after the row is committed, so the client
+                    # knows the message is durable.
+                    _Frame.write(client_sock, _OP_ACK, b"", self._secret_key)
                 else:
                     log.warning(
                         "Unknown opcode 0x%02x; closing connection",
@@ -694,13 +784,18 @@ class MyQueue:
                 except ValueError:
                     pass
             _close_socket(client_sock)
+            # Each worker thread owns a SQLite connection; release it.
+            self.close_db()
 
     def _controlling_loop(self) -> None:
         """Accept incoming connections and spawn a per-connection thread."""
         while not self._shutdown.is_set():
+            ssock = self._ssock
+            if ssock is None:
+                return
             try:
-                client_sock, _addr = self._ssock.accept()
-            except socket.timeout:
+                client_sock, _addr = ssock.accept()
+            except TimeoutError:
                 continue
             except OSError:
                 if self._shutdown.is_set():
@@ -709,9 +804,15 @@ class MyQueue:
                 sleep(0.5)
                 continue
             except Exception:
+                if self._shutdown.is_set():
+                    return
                 log.exception("Unexpected error in accept loop")
                 sleep(0.5)
                 continue
+
+            if self._shutdown.is_set():
+                _close_socket(client_sock)
+                return
 
             try:
                 client_sock.settimeout(self._timeout)
@@ -728,34 +829,44 @@ class MyQueue:
                 daemon=True,
             )
             with self._worker_threads_lock:
+                # Drop finished threads so the list can't grow without bound
+                # between maintenance passes.
+                self._worker_threads = [
+                    th for th in self._worker_threads if th.is_alive()
+                ]
                 self._worker_threads.append(t)
             t.start()
 
     def _maintenance_loop(self) -> None:
         """Periodic background maintenance: thread reaping, TTL reaping,
         WAL checkpointing."""
-        while not self._shutdown.wait(self._reaper_interval):
-            # 1. Drop references to finished worker threads.
-            with self._worker_threads_lock:
-                self._worker_threads = [t for t in self._worker_threads if t.is_alive()]
+        try:
+            while not self._shutdown.wait(self._reaper_interval):
+                # 1. Drop references to finished worker threads.
+                with self._worker_threads_lock:
+                    self._worker_threads = [
+                        t for t in self._worker_threads if t.is_alive()
+                    ]
 
-            # 2. Delete rows whose created_at is past the TTL cutoff.
-            if self._ttl_seconds is not None:
+                # 2. Delete rows whose created_at is past the TTL cutoff.
+                if self._ttl_seconds is not None:
+                    try:
+                        deleted = self._reap_expired()
+                        for table, n in deleted.items():
+                            log.info("Reaped %d expired entries from %s", n, table)
+                    except Exception:
+                        log.exception("TTL reaper iteration failed")
+
+                # 3. Compact the DB: return free pages to the OS, truncate
+                # the WAL. Replaces the previous PASSIVE checkpoint — that
+                # kept the WAL functionally bounded but didn't shrink either
+                # the main DB file or the WAL file on disk.
                 try:
-                    deleted = self._reap_expired()
-                    for table, n in deleted.items():
-                        log.info("Reaped %d expired entries from %s", n, table)
+                    self._db_compact()
                 except Exception:
-                    log.exception("TTL reaper iteration failed")
-
-            # 3. Compact the DB: return free pages to the OS, truncate the
-            # WAL. Replaces the previous PASSIVE checkpoint — that kept the
-            # WAL functionally bounded but didn't shrink either the main DB
-            # file or the WAL file on disk.
-            try:
-                self._db_compact()
-            except Exception:
-                log.exception("DB compaction failed")
+                    log.exception("DB compaction failed")
+        finally:
+            self.close_db()
 
     # ------------------------------------------------------------------ #
     # Server lifecycle                                                   #
@@ -769,7 +880,7 @@ class MyQueue:
         if self._ssock is not None:
             raise RuntimeError("server already started")
 
-        ssock: Optional[socket.socket] = None
+        ssock: socket.socket | None = None
         try:
             ssock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             ssock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -780,8 +891,10 @@ class MyQueue:
             _close_socket(ssock)
             raise
 
-        self._ssock = ssock
+        # Clear the flag *before* the threads start, otherwise they may see a
+        # stale "shutting down" state from a previous run and exit at once.
         self._shutdown.clear()
+        self._ssock = ssock
         self._listen_thread = threading.Thread(
             target=self._controlling_loop,
             name="tcpQueue-listener",
@@ -801,8 +914,8 @@ class MyQueue:
         every operation is already on disk."""
         self._shutdown.set()
 
-        _close_socket(self._ssock)
-        self._ssock = None
+        ssock, self._ssock = self._ssock, None
+        _close_socket(ssock)
 
         with self._workers_lock:
             workers = list(self._workers)
@@ -810,8 +923,9 @@ class MyQueue:
         for w in workers:
             _close_socket(w)
 
+        current = threading.current_thread()
         for t in (self._listen_thread, self._maintenance_thread):
-            if t is not None and t.is_alive():
+            if t is not None and t is not current and t.is_alive():
                 t.join(timeout=5.0)
         self._listen_thread = None
         self._maintenance_thread = None
@@ -820,11 +934,12 @@ class MyQueue:
             threads = list(self._worker_threads)
             self._worker_threads.clear()
         for t in threads:
-            t.join(timeout=1.0)
+            if t is not current:
+                t.join(timeout=1.0)
 
     def install_signal_handlers(
         self,
-        signals: Optional[tuple[int, ...]] = None,
+        signals: tuple[int, ...] | None = None,
     ) -> None:
         """Install handlers that call ``stop_server()`` on the given signals.
 
@@ -853,17 +968,17 @@ class MyQueue:
             try:
                 signal.signal(sig, handler)
             except (ValueError, OSError) as ex:
-                log.warning("Could not install handler for signal %d: %s", sig, ex)
+                log.warning("Could not install handler for signal %s: %s", sig, ex)
 
-    def wait_for_shutdown(self, timeout: Optional[float] = None) -> bool:
+    def wait_for_shutdown(self, timeout: float | None = None) -> bool:
         """Block until ``stop_server()`` is invoked (e.g. by a signal
         handler). Returns ``True`` if shutdown happened, ``False`` on
         timeout."""
         return self._shutdown.wait(timeout=timeout)
 
-    def _connect_locked(self) -> Optional[socket.socket]:
+    def _connect_locked(self) -> socket.socket | None:
         """Open a new client socket. Caller MUST hold self._csock_lock."""
-        sock: Optional[socket.socket] = None
+        sock: socket.socket | None = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(self._timeout)
@@ -871,7 +986,12 @@ class MyQueue:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             return sock
         except Exception as ex:
-            log.error("Unable to connect to %s:%d: %s", *self._addr, ex)
+            log.error(
+                "Unable to connect to %s:%d: %s",
+                self._addr[0],
+                self._addr[1],
+                ex,
+            )
             _close_socket(sock)
             return None
 
@@ -879,13 +999,17 @@ class MyQueue:
     # Client side                                                        #
     # ------------------------------------------------------------------ #
 
-    def start_client(self) -> None:
-        """Connect to the server. Idempotent."""
+    def start_client(self) -> bool:
+        """Connect to the server. Idempotent.
+
+        Returns ``True`` if a connection is established, ``False`` otherwise
+        (later calls will transparently retry the connect)."""
         with self._csock_lock:
             if self._csock is not None:
                 _close_socket(self._csock)
                 self._csock = None
             self._csock = self._connect_locked()
+            return self._csock is not None
 
     def close(self) -> None:
         """Close the client connection."""
@@ -893,10 +1017,14 @@ class MyQueue:
             _close_socket(self._csock)
             self._csock = None
 
-    def _ensure_connected_locked(self) -> Optional[socket.socket]:
+    def _ensure_connected_locked(self) -> socket.socket | None:
         if self._csock is None:
             self._csock = self._connect_locked()
         return self._csock
+
+    def _drop_connection_locked(self) -> None:
+        _close_socket(self._csock)
+        self._csock = None
 
     def _get(self, opcode: bytes) -> Any:
         with self._csock_lock:
@@ -907,13 +1035,11 @@ class MyQueue:
                 _Frame.write(sock, opcode, b"", self._secret_key)
                 frame = _Frame.read(sock, self._secret_key)
             except (OSError, ValueError) as ex:
-                _close_socket(self._csock)
-                self._csock = None
+                self._drop_connection_locked()
                 raise ConnectionError(str(ex)) from ex
 
             if frame is None:
-                _close_socket(self._csock)
-                self._csock = None
+                self._drop_connection_locked()
                 raise ConnectionError("server closed connection")
 
             resp_opcode, payload = frame
@@ -924,6 +1050,7 @@ class MyQueue:
                     return _deserialize(payload)
                 except ValueError as ex:
                     raise ConnectionError(str(ex)) from ex
+            self._drop_connection_locked()
             raise ConnectionError("unexpected response opcode 0x%02x" % resp_opcode[0])
 
     def get_consumer(self) -> Any:
@@ -941,27 +1068,44 @@ class MyQueue:
         return self._get(_OP_GET_PRODUCER)
 
     def send_to_producer(self, blob: Any) -> bool:
-        """Send `blob` to the producer queue. Retries up to 3 times with
-        random back-off, then drops the message. Returns ``True`` on
-        success, ``False`` if the message was dropped.
+        """Send `blob` to the producer queue and wait for the server's ACK.
+        Retries up to 3 times with random back-off, then drops the message.
+        Returns ``True`` on success, ``False`` if the message was dropped.
+
+        Delivery is at-least-once: if the ACK is lost after the server
+        committed the row, the retry stores a second copy.
 
         Raises ``TypeError`` immediately if `blob` is not JSON-serializable."""
         payload = _serialize(blob)
 
-        for attempt in range(1, 4):
+        attempts = 3
+        for attempt in range(1, attempts + 1):
             with self._csock_lock:
                 sock = self._ensure_connected_locked()
                 if sock is not None:
                     try:
                         _Frame.write(sock, _OP_PUT_PRODUCER, payload, self._secret_key)
+                        frame = _Frame.read(sock, self._secret_key)
+                        if frame is None:
+                            raise ConnectionError("server closed connection before ACK")
+                        resp_opcode, _ = frame
+                        if resp_opcode != _OP_ACK:
+                            raise ConnectionError(
+                                "unexpected response opcode 0x%02x" % resp_opcode[0]
+                            )
                         return True
                     except Exception as ex:
-                        log.warning("Send failed (attempt %d/3): %s", attempt, ex)
-                        _close_socket(self._csock)
-                        self._csock = None
-            sleep(random() * 2)
+                        log.warning(
+                            "Send failed (attempt %d/%d): %s",
+                            attempt,
+                            attempts,
+                            ex,
+                        )
+                        self._drop_connection_locked()
+            if attempt < attempts:
+                sleep(random() * 2)
 
-        log.error("Dropping message after 3 failed send attempts")
+        log.error("Dropping message after %d failed send attempts", attempts)
         return False
 
     def send_to_consumer(self, blob: Any) -> None:
@@ -980,8 +1124,9 @@ class MyQueue:
 
     def clear_queues(self) -> None:
         """Clear both queues. Server side only."""
-        for table in _TABLES:
-            self._table_clear(table)
+        with self._db_txn() as conn:
+            for table in _TABLES:
+                conn.execute(f"DELETE FROM {table}")
 
     def consumer_size(self) -> int:
         return self._table_size("consumer")
