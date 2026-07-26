@@ -1,6 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
-# ruff: noqa: E402
 # The MIT License (MIT)
 #
 # Copyright (c) 2015-2021 Steven Fernandez
@@ -60,34 +58,28 @@ except NameError:
     pass
 
 
-import ast
-import asyncio
+# Import policy: only modules needed to build the console and show the first
+# prompt are imported here. Everything else is imported inside the function
+# that uses it. After the first call an import is just a sys.modules dict
+# lookup, so the runtime cost is noise, while the startup saving is real
+# (asyncio alone is ~35ms, and nothing touches it unless you type \A).
+#
+# `rlcompleter` has to stay because ImprovedCompleter subclasses it at class
+# definition time. It drags in `inspect` and `keyword`, so deferring those two
+# would save nothing.
 import atexit
-import concurrent
-import glob
-import importlib
-import inspect
 import keyword
 import os
-import pkgutil
-import pprint
 import re
 import readline
 import rlcompleter
-import shlex
-import signal
-import subprocess
-import threading
-import warnings
-import webbrowser
 from code import InteractiveConsole
-from functools import cached_property, lru_cache, partial
-from tempfile import NamedTemporaryFile
-from types import FunctionType, SimpleNamespace
+from functools import cached_property, lru_cache, partial, wraps
+from types import SimpleNamespace
 
 __version__ = "0.9.1"
 
-# Pre-compiled regex constants — kept at module level to avoid recompilation
+# Pre-compiled regex constants - kept at module level to avoid recompilation
 _RE_NAME_ERROR = re.compile(r"'(\w+)' is not defined")
 _RE_DICT_KEYS = re.compile(r'([\'\("]+(.*?[\'\)"]: ))+?')
 
@@ -97,20 +89,35 @@ def _pkg_contents(pkg: str) -> list[str]:
     """Return sub-module names for *pkg*. Cached at module level so the
     lru_cache key is just the package name string, not an unhashable instance.
     """
+    import importlib.util
+    import pkgutil
+
     spec = importlib.util.find_spec(pkg)
     if spec is None:
         return []
-    locs = [spec.origin] if not spec.parent else spec.submodule_search_locations
+    locs = (
+        [spec.origin] if not spec.parent else spec.submodule_search_locations
+    )
     return [
         item.name
-        for item in pkgutil.walk_packages(locs, f"{pkg}.", onerror=lambda _: None)
+        for item in pkgutil.walk_packages(
+            locs, f"{pkg}.", onerror=lambda _: None
+        )
     ]
 
 
 config = SimpleNamespace(
     ONE_INDENT="    ",  # what should we use for indentation ?
     HISTFILE=os.path.expanduser("~/.python_history"),
-    HISTSIZE=-1,
+    # - max number of entries kept in HISTFILE. readline appends to the file
+    # on every exit but never truncates it, so an uncapped history file grows
+    # forever and eventually dominates interpreter startup. Set to -1 for the
+    # old unlimited behaviour.
+    HISTSIZE=10000,
+    # - only rewrite HISTFILE once it exceeds HISTSIZE by this factor.
+    # Trimming means reading the whole file, so do it rarely rather than on
+    # every exit.
+    HIST_TRIM_FACTOR=1.5,
     EDITOR=os.getenv("EDITOR", "vi"),
     SHELL=os.getenv("SHELL", "/bin/bash"),
     EDIT_CMD=r"\e",
@@ -141,6 +148,43 @@ config = SimpleNamespace(
 red = green = yellow = blue = purple = cyan = grey = str
 
 
+def _trim_history_file():
+    """Keep HISTFILE from growing without bound.
+
+    readline appends this session's lines to HISTFILE on exit but never
+    truncates it, and python's readline module does not expose GNU readline's
+    history_truncate_file(), so do it by hand. Only the last HISTSIZE lines
+    are kept.
+
+    Note: like the append-on-exit design this races with concurrent sessions.
+    The rename is atomic, but a session that appends between our read and our
+    rename will lose those lines. Trimming is rare enough (see
+    HIST_TRIM_FACTOR) that this is an acceptable trade for a history file.
+    """
+    limit = config.HISTSIZE
+    if not limit or limit < 0:
+        return
+    try:
+        with open(config.HISTFILE, "rb") as histfile:
+            lines = histfile.readlines()
+    except OSError:
+        return
+
+    if len(lines) <= limit * config.HIST_TRIM_FACTOR:
+        return
+
+    tmpfile = f"{config.HISTFILE}.trim.{os.getpid()}"
+    try:
+        with open(tmpfile, "wb") as out:
+            out.writelines(lines[-limit:])
+        os.replace(tmpfile, config.HISTFILE)
+    except OSError:
+        try:
+            os.unlink(tmpfile)
+        except OSError:
+            pass
+
+
 class ImprovedCompleter(rlcompleter.Completer):
     """A smarter rlcompleter.Completer"""
 
@@ -166,6 +210,8 @@ class ImprovedCompleter(rlcompleter.Completer):
         twice (once for pkglist, once for modlist) doubles the I/O cost.
         This property does one pass and caches both results together.
         """
+        import pkgutil
+
         pkgs: set[str] = set()
         mods: set[str] = set()
         for item in pkgutil.iter_modules():
@@ -188,34 +234,50 @@ class ImprovedCompleter(rlcompleter.Completer):
 
     @cached_property
     def exception_names(self) -> list[str]:
-        """Walk the full exception hierarchy iteratively and cache the result."""
-        names = []
+        """Walk the full exception hierarchy iteratively and cache the result.
+
+        Multiple inheritance means a class can be reached by more than one
+        path, so track visited classes to avoid duplicate completions.
+        """
+        names: dict[str, None] = {}
+        seen: set[type] = set()
         stack = [Exception]
         while stack:
             cls = stack.pop()
-            names.append(cls.__name__)
+            if cls in seen:
+                continue
+            seen.add(cls)
+            names[cls.__name__] = None
             stack.extend(cls.__subclasses__())
-        return names
+        return list(names)
 
     def startswith_filter(self, text, names, striptext=None):
+        # Must return a list, not a generator: complete() calls len() on the
+        # result, indexes it by readline's `state`, and may .extend() it.
         if striptext:
             return [
-                name.replace(striptext, "") for name in names if name.startswith(text)
+                name.removeprefix(striptext)
+                for name in names
+                if name.startswith(text)
             ]
-        # Return a generator — readline pulls matches one at a time via state,
-        # so we don't need to materialise the full list upfront.
-        return (name for name in names if name.startswith(text))
+        return [name for name in names if name.startswith(text)]
 
     def get_path_matches(self, text):
+        import glob
+
         # Use a single '*' glob for one-level completion. The bare '**' pattern
         # without recursive=True does not descend into subdirectories and is
         # misleading; readline tab-completion is single-level by convention.
+        # glob.escape() so a literal '[', '?' or '*' in the typed path is
+        # treated as a character rather than a glob metacharacter.
         return [
             f"{item}{os.path.sep}" if os.path.isdir(item) else item
-            for item in glob.iglob(f"{text}*")
+            for item in glob.iglob(f"{glob.escape(text)}*")
         ]
 
     def get_import_matches(self, text, words):
+        import importlib
+
         if any(
             [
                 (len(words) == 2 and not text),
@@ -246,8 +308,17 @@ class ImprovedCompleter(rlcompleter.Completer):
                     return matches
 
             # from module import na<ta>
-            mod = importlib.import_module(namespace)
-            return self.startswith_filter(text, getattr(mod, "__all__", dir(mod)))
+            # Importing here runs arbitrary module-level code, which may fail
+            # for any reason. A completer must never raise.
+            try:
+                mod = importlib.import_module(namespace)
+            except Exception:
+                return []
+            return self.startswith_filter(
+                text, getattr(mod, "__all__", dir(mod))
+            )
+
+        return []
 
     def complete(self, text, state, line=None):
         if not line:
@@ -262,7 +333,7 @@ class ImprovedCompleter(rlcompleter.Completer):
             # text, we need to populate self.matches, just like
             # super().complete()
             if line.startswith(("from ", "import ")):
-                self.matches = self.get_import_matches(text, words)
+                self.matches = self.get_import_matches(text, words) or []
             elif words[0] in ("raise", "except"):
                 self.matches = self.startswith_filter(
                     text.lstrip("("), self.exception_names
@@ -293,10 +364,14 @@ class ImprovedCompleter(rlcompleter.Completer):
 
 
 def _doc_to_usage(method):
+    @wraps(method)
     def inner(self, arg):
         arg = arg.strip()
         if arg.startswith(("-h", "--help")):
-            return self.writeline(blue(method.__doc__.strip()))
+            # The docstrings are templates referencing `config`, so they have
+            # to be formatted before display or the user sees raw braces.
+            usage = method.__doc__.format(config=config).strip()
+            return self.writeline(blue(usage))
         return method(self, arg)
 
     return inner
@@ -343,6 +418,7 @@ class ImprovedConsole(InteractiveConsole):
 
     def runcode_sync(self, code):
         """Wrapper around super().runcode() to enable auto-importing"""
+        import importlib
 
         if not config.ENABLE_AUTO_IMPORTS:
             return super().runcode(code)
@@ -350,13 +426,32 @@ class ImprovedConsole(InteractiveConsole):
         try:
             exec(code, self.locals)
         except NameError as err:
-            if match := _RE_NAME_ERROR.search(err.args[0]):
-                name = match.group(1)
-                if name in self.completer.modlist:
-                    mod = importlib.import_module(name)
-                    print(grey(f"# imported undefined module: {name}", bold=False))
-                    self.locals[name] = mod
-                    return self.runcode(code)
+            # Auto-importing re-executes the whole statement, so only do it
+            # when the NameError came from the top-level statement itself.
+            # If it was raised inside a called function, that function has
+            # already run and re-running it would repeat its side effects.
+            tb = err.__traceback__
+            while tb.tb_next is not None:
+                tb = tb.tb_next
+            if tb.tb_frame.f_code is code:
+                if match := _RE_NAME_ERROR.search(err.args[0]):
+                    name = match.group(1)
+                    if name in self.completer.modlist:
+                        try:
+                            mod = importlib.import_module(name)
+                        except ImportError:
+                            # Present on the module path but not importable.
+                            mod = None
+                        if mod is not None:
+                            print(
+                                grey(
+                                    f"# imported undefined module: {name} "
+                                    "(re-running statement)",
+                                    bold=False,
+                                )
+                            )
+                            self.locals[name] = mod
+                            return self.runcode(code)
             self.showtraceback()
         except SystemExit:
             raise
@@ -370,7 +465,7 @@ class ImprovedConsole(InteractiveConsole):
         self.buffer = []  # This holds the statement to be executed
         self._indent = ""
         self.loop = None
-        super(ImprovedConsole, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.init_color_functions()
         self.init_readline()
@@ -444,11 +539,20 @@ class ImprovedConsole(InteractiveConsole):
         def append_history(len_at_start):
             current_len = readline.get_current_history_length()
             if _has_append_history:
-                readline.append_history_file(
-                    current_len - len_at_start, config.HISTFILE
-                )
-            else:
-                readline.write_history_file(config.HISTFILE)
+                try:
+                    readline.append_history_file(
+                        current_len - len_at_start, config.HISTFILE
+                    )
+                    return
+                except OSError:
+                    # Most likely HISTFILE does not exist yet (first ever
+                    # session). write_history_file() creates it.
+                    pass
+            readline.write_history_file(config.HISTFILE)
+
+        # - atexit handlers run LIFO, so registering the trim before the
+        # append means the append runs first and the trim sees the final file.
+        atexit.register(_trim_history_file)
 
         if readline.get_current_history_length() == 0:
             # If no history was loaded, default to .python_history.
@@ -480,33 +584,40 @@ class ImprovedConsole(InteractiveConsole):
         ssh connection.
         """
         prompt_color = yellow
-        sys.ps1 = prompt_color(">=> " if nested else ">>> ", readline_workaround=True)
+        sys.ps1 = prompt_color(
+            ">=> " if nested else ">>> ", readline_workaround=True
+        )
         sys.ps2 = red("... ", readline_workaround=True)
         # - if we are over a remote connection, modify the ps1
         if os.getenv("SSH_CONNECTION"):
             ssh_parts = os.getenv("SSH_CONNECTION", "").split()
             this_host = ssh_parts[2] if len(ssh_parts) >= 3 else "remote"
-            sys.ps1 = prompt_color(f"[{this_host}]>>> ", readline_workaround=True)
+            sys.ps1 = prompt_color(
+                f"[{this_host}]>>> ", readline_workaround=True
+            )
             sys.ps2 = red(f"[{this_host}]... ", readline_workaround=True)
 
     def init_pprint(self):
         """Activates pretty-printing of output values."""
         color_dict = partial(_RE_DICT_KEYS.sub, lambda m: purple(m.group()))
-        format_func = partial(pprint.pformat, compact=True)
 
         def pprint_callback(value):
             if value is not None:
+                # pprint pulls in dataclasses, so import it on first use
+                # rather than at startup.
+                import pprint
+
+                # os.get_terminal_size() returns (columns, lines), so the
+                # width is .columns. It raises OSError (not AttributeError)
+                # when stdout is not a tty, eg. under a pipe.
                 try:
-                    rows, cols = os.get_terminal_size()
-                except AttributeError:
+                    cols = os.get_terminal_size().columns
+                except OSError:
                     try:
-                        rows, cols = map(
-                            int,
-                            subprocess.check_output(["stty", "size"]).split(),
-                        )
-                    except Exception:
+                        cols = int(os.environ["COLUMNS"])
+                    except (KeyError, ValueError):
                         cols = 80
-                formatted = format_func(value, width=cols)
+                formatted = pprint.pformat(value, width=cols, compact=True)
                 print(
                     color_dict(formatted)
                     if issubclass(type(value), dict)
@@ -530,6 +641,10 @@ class ImprovedConsole(InteractiveConsole):
         )
 
     def _init_nested_repl(self):
+        import ast
+        import asyncio
+        import threading
+
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self.compile.compiler.flags |= ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
@@ -551,6 +666,8 @@ class ImprovedConsole(InteractiveConsole):
                     exitmsg="now exiting nested REPL...\n",
                 )
             finally:
+                import warnings
+
                 warnings.filterwarnings(
                     "ignore",
                     message=r"^coroutine .* was never awaited$",
@@ -610,7 +727,9 @@ class ImprovedConsole(InteractiveConsole):
     def toggle_auto_indent(self, _):
         """{config.TOGGLE_AUTO_INDENT_CMD} - Toggles the auto-indentation behavior"""
         hook = None if config.AUTO_INDENT else self.auto_indent_hook
-        msg = "# Auto-Indent has been {}abled\n".format("en" if hook else "dis")
+        msg = "# Auto-Indent has been {}abled\n".format(
+            "en" if hook else "dis"
+        )
         config.AUTO_INDENT = bool(hook)
 
         if hook is None:
@@ -634,6 +753,8 @@ class ImprovedConsole(InteractiveConsole):
                 # '(' or '.' and replace inner '.' with '+' to create the
                 # search query string
                 line = line.rstrip(f"{config.DOC_CMD}.(").replace(".", "+")
+                import webbrowser
+
                 webbrowser.open(config.DOC_URL.format(sys=sys, term=line))
                 line = ""
             else:
@@ -665,10 +786,10 @@ class ImprovedConsole(InteractiveConsole):
 
     def raw_input(self, prompt=""):
         """Read the input and delegate if necessary."""
-        line = super(ImprovedConsole, self).raw_input(prompt)
+        line = super().raw_input(prompt)
         empty_lines = 3 if line else 1
         while not config.AUTO_INDENT and empty_lines < 3:
-            line = super(ImprovedConsole, self).raw_input(prompt)
+            line = super().raw_input(prompt)
             empty_lines += 1 if not line else 3
         return self._cmd_handler(line)
 
@@ -676,7 +797,7 @@ class ImprovedConsole(InteractiveConsole):
         """Wrapper around InteractiveConsole's push method for adding an
         indent on start of a block.
         """
-        if more := super(ImprovedConsole, self).push(line):
+        if more := super().push(line):
             if line.endswith((":", "[", "{", "(")):
                 self._indent += config.ONE_INDENT
         else:
@@ -684,6 +805,11 @@ class ImprovedConsole(InteractiveConsole):
         return more
 
     def runcode_async(self, code):
+        import asyncio
+        import concurrent.futures
+        import inspect
+        from types import FunctionType
+
         future = concurrent.futures.Future()
 
         def callback():
@@ -707,7 +833,9 @@ class ImprovedConsole(InteractiveConsole):
 
             try:
                 self.locals["repl_future"] = self.loop.create_task(coro)
-                asyncio.futures._chain_future(self.locals["repl_future"], future)
+                asyncio.futures._chain_future(
+                    self.locals["repl_future"], future
+                )
             except BaseException as exc:
                 future.set_exception(exc)
 
@@ -739,11 +867,15 @@ class ImprovedConsole(InteractiveConsole):
             if stripped or stripped != previous:
                 self.session_history.append(line)
             previous = stripped
-        return super(ImprovedConsole, self).resetbuffer()
+        return super().resetbuffer()
 
     def _mktemp_buffer(self, lines):
         """Writes lines to a temp file and returns the filename."""
-        with NamedTemporaryFile(mode="w+", suffix=".py", delete=False) as tempbuf:
+        from tempfile import NamedTemporaryFile
+
+        with NamedTemporaryFile(
+            mode="w+", suffix=".py", delete=False
+        ) as tempbuf:
             tempbuf.write("\n".join(lines))
         return tempbuf.name
 
@@ -755,7 +887,7 @@ class ImprovedConsole(InteractiveConsole):
         executing multiple statements from an edited buffer.
         """
         self._skip_subsequent = True
-        return super(ImprovedConsole, self).showtraceback(*args)
+        return super().showtraceback(*args)
 
     def _exec_from_file(
         self,
@@ -791,7 +923,9 @@ class ImprovedConsole(InteractiveConsole):
                         self.resetbuffer()
 
             if not quiet:
-                self.write(cyan(f"... {stmt}", bold=(not self._skip_subsequent)))
+                self.write(
+                    cyan(f"... {stmt}", bold=(not self._skip_subsequent))
+                )
 
             if self._skip_subsequent:
                 self.session_history.append(stmt)
@@ -841,11 +975,19 @@ class ImprovedConsole(InteractiveConsole):
           source file of the object and it is opened if found. Else the
           argument is treated as a filename.
         """
+        import inspect
+        import shlex
+        import subprocess
+
         line_num_opt = ""
         if arg:
             try:
                 if obj := self.lookup(arg):
                     filename = inspect.getsourcefile(obj)
+                    if filename is None:
+                        return self.writeline(
+                            f"No source file available for {arg}"
+                        )
                     _, line_no = inspect.getsourcelines(obj)
                     line_num_opt = config.LINE_NUM_OPT.format(line_no=line_no)
                 else:
@@ -863,10 +1005,14 @@ class ImprovedConsole(InteractiveConsole):
             )
             line_num_opt = config.LINE_NUM_OPT.format(line_no=len(history))
 
-        # - shell out to the editor
-        rc = subprocess.run(
-            shlex.split(f"{config.EDITOR} {line_num_opt} {filename}")
-        ).returncode
+        # - shell out to the editor. Only EDITOR is shell-split (it may carry
+        # its own flags); the filename is passed through untouched so paths
+        # containing spaces or quotes still work.
+        editor_argv = shlex.split(config.EDITOR)
+        if line_num_opt:
+            editor_argv.append(line_num_opt)
+        editor_argv.append(filename)
+        rc = subprocess.run(editor_argv).returncode
 
         # - if arg was not provided (ie: we edited history), execute
         # un-commented lines in the current namespace
@@ -911,6 +1057,10 @@ class ImprovedConsole(InteractiveConsole):
         CompletedProcess(arg=['ls'], returncode=0, stdout=b'', stderr=b'ls:
         cannot access /does/not/exist: No such file or directory\n')
         """
+        import shlex
+        import signal
+        import subprocess
+
         if cmd:
             try:
                 cmd = cmd.format(**self.locals)
@@ -945,6 +1095,8 @@ class ImprovedConsole(InteractiveConsole):
     @_doc_to_usage
     def process_list_cmd(self, arg):
         """{config.LIST_CMD} <object> - List source code for object, if possible."""
+        import inspect
+
         if not arg:
             return self.writeline(
                 "source list command requires an "
@@ -958,7 +1110,16 @@ class ImprovedConsole(InteractiveConsole):
             for line_no, line in enumerate(src_lines, offset + 1):
                 self.write(cyan(f"{line_no:03d}: {line}"))
 
+    @_doc_to_usage
     def process_help_cmd(self, arg):
+        """{config.HELP_CMD} [keyword|object|command]
+
+        Print help for a keyword, an object or one of this console's commands.
+
+        - without arguments, print the feature list for this console.
+        - with a python keyword or any object, print its help/docstring.
+        - with one of the console commands, print that command's usage.
+        """
         if arg:
             if keyword.iskeyword(arg):
                 self.push(f'help("{arg}")')
@@ -991,7 +1152,9 @@ class ImprovedConsole(InteractiveConsole):
         retries = 2
         while retries:
             try:
-                super(ImprovedConsole, self).interact(banner=banner, exitmsg=exitmsg)
+                super().interact(
+                    banner=banner, exitmsg=exitmsg
+                )
             except SystemExit:
                 # Fixes #2: exit when 'quit()' invoked
                 break
@@ -1020,6 +1183,8 @@ class ImprovedConsole(InteractiveConsole):
                 break
 
         # Exit the Python shell on exiting the InteractiveConsole
+        import threading
+
         if threading.current_thread() == threading.main_thread():
             sys.exit()
 
