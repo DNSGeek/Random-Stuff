@@ -60,12 +60,18 @@ Usage:
     ./summaries.py NAME       print one summary and exit
     ./summaries.py --list     print the repo names and exit
     ./summaries.py --json     dump the raw JSON and exit
+    ./summaries.py --text [PATH]
+                              write every summary to a plain text file
+                              (default: summaries.txt next to this script)
 """
 
 import json
+import os
 import shutil
 import sys
 import textwrap
+
+TEXT_WIDTH = 80
 
 _DATA = r"""
 '''
@@ -86,8 +92,8 @@ def term_width():
     return max(40, min(width, 100))
 
 
-def wrap(text):
-    width = term_width()
+def wrap(text, width=None):
+    width = width or term_width()
     out = []
     for para in text.split("\\n"):
         para = para.strip()
@@ -104,6 +110,32 @@ def show(name, entry):
     print()
     print(wrap(entry.get("summary", "(no summary)")))
     print()
+
+
+def write_text(path, names, repos, meta):
+    rule = "=" * TEXT_WIDTH
+    lines = [
+        "Repo summaries (%d)" % len(names),
+        "Generated %s by %s" % (meta.get("generated", "?"), meta.get("model", "?")),
+    ]
+    if meta.get("source_directory"):
+        lines.append("Source: %s" % meta["source_directory"])
+    lines.append("")
+    for name in names:
+        entry = repos[name]
+        lines.extend([rule, name, rule, ""])
+        lines.append(wrap(entry.get("summary", "(no summary)"), TEXT_WIDTH))
+        if entry.get("readme_truncated"):
+            lines.extend(["", "(Summary based on a truncated README.)"])
+        lines.append("")
+    try:
+        with open(path, "w", encoding="utf-8") as out:
+            out.write("\\n".join(lines))
+    except OSError as ex:
+        sys.stderr.write("Could not write %s: %s\\n" % (path, ex))
+        return 1
+    print("Wrote %d summaries to: %s" % (len(names), path))
+    return 0
 
 
 def print_menu(names, meta):
@@ -166,7 +198,11 @@ def main(argv):
     data = load_data()
     repos = data.get("repos", {})
     names = sorted(repos)
-    meta = {"generated": data.get("generated", "?"), "model": data.get("model", "?")}
+    meta = {
+        "generated": data.get("generated", "?"),
+        "model": data.get("model", "?"),
+        "source_directory": data.get("source_directory"),
+    }
 
     if not names:
         print("No summaries in this file.")
@@ -184,6 +220,17 @@ def main(argv):
             for name in names:
                 print(name)
             return 0
+        if arg in ("-t", "--text") or arg.startswith("--text="):
+            if arg.startswith("--text="):
+                path = arg.split("=", 1)[1]
+            elif len(argv) > 1:
+                path = argv[1]
+            else:
+                path = ""
+            if not path:
+                here = os.path.dirname(os.path.abspath(__file__))
+                path = os.path.join(here, "summaries.txt")
+            return write_text(path, names, repos, meta)
         name = resolve(arg, names)
         if name is None:
             sys.stderr.write("No such repo: %s\\n" % arg)
@@ -361,9 +408,11 @@ def main() -> int:
             out.write(render_output(data))
         make_executable(output_path)
         print(f"Wrote {len(repos)} summaries to: {output_path}")
-        print(
-            f"Run it with: {output_path if os.path.isabs(output_path) else './' + output_path}"
+        run_path: str = (
+            output_path if os.path.isabs(output_path) else "./" + output_path
         )
+        print(f"Run it with: {run_path}")
+        print(f"Write a text copy with: {run_path} --text")
     else:
         print("No summaries to write.")
 
