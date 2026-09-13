@@ -27,6 +27,20 @@ README_LIMIT: int = 65536
 # so this is well above the old 60s.
 LLM_TIMEOUT: int = 300
 
+# Saved options live here unless -c/--config points somewhere else
+CONFIG_NAME: str = "summarize_git.json"
+
+# Built-in option values, used when neither the config nor the command line
+# sets them. These keys are also the only ones read from or written to config.
+DEFAULTS: dict[str, Any] = {
+    "directory": None,
+    "output": None,
+    "url": LLM_URL,
+    "model": LLM_MODEL,
+    "timeout": LLM_TIMEOUT,
+    "quiet": False,
+}
+
 SYSTEM_PROMPT: str = (
     "You are a technical writer summarizing software project documentation. "
     "You are accurate and never invent details that are not in the source."
@@ -269,9 +283,7 @@ def pull_readme(base_dir: str, dir_name: str) -> tuple[str, bool]:
         if entry.lower() == "readme.md":
             readme_path: str = os.path.join(full_dir, entry)
             try:
-                with open(
-                    readme_path, "r", encoding="utf-8", errors="replace"
-                ) as f:
+                with open(readme_path, "r", encoding="utf-8", errors="replace") as f:
                     content: str = f.read()
                 if len(content) > README_LIMIT:
                     stderr.write(
@@ -299,9 +311,7 @@ def pull_ai(
         ],
     }
     try:
-        response: requests.Response = session.post(
-            url, json=payload, timeout=timeout
-        )
+        response: requests.Response = session.post(url, json=payload, timeout=timeout)
         response.raise_for_status()
         resp_json: dict[str, Any] = response.json()
         summary: str = str(resp_json["choices"][0]["message"]["content"])
@@ -335,42 +345,120 @@ def make_executable(path: str) -> None:
         stderr.write(f"[warning] could not mark {path} executable: {ex}\n")
 
 
+def default_config_path() -> str:
+    """Return $XDG_CONFIG_HOME/summarize_git.json, falling back to ~/.config."""
+    base: str = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
+    return os.path.join(base, CONFIG_NAME)
+
+
+def load_config(path: str) -> dict[str, Any]:
+    """Return the known options stored in the JSON config at path, or {}."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw: Any = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as ex:
+        stderr.write(f"[warning] ignoring unreadable config {path}: {ex}\n")
+        return {}
+    if not isinstance(raw, dict):
+        stderr.write(f"[warning] ignoring config {path}: not a JSON object\n")
+        return {}
+    unknown: list[str] = sorted(set(raw) - set(DEFAULTS))
+    if unknown:
+        stderr.write(f"[warning] unknown keys in {path}: {unknown}\n")
+    return {key: raw[key] for key in DEFAULTS if key in raw}
+
+
+def save_config(path: str, options: dict[str, Any]) -> None:
+    """Write options to the JSON config at path, creating its directory."""
+    saved: dict[str, Any] = dict(options)
+    # Store absolute paths so the config works from any working directory.
+    for key in ("directory", "output"):
+        if saved.get(key):
+            saved[key] = os.path.abspath(os.path.expanduser(saved[key]))
+    parent: str = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(saved, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Summarize README.md files in subdirectories using a local LLM."
+        description="Summarize README.md files in subdirectories using a local LLM.",
+        epilog=(
+            "Options are read from the config file first; anything given on "
+            "the command line overrides it. Use --save to store the "
+            "current options for next time."
+        ),
+    )
+    # Option defaults are None so we can tell what was actually given and
+    # layer: command line > config file > built-in DEFAULTS.
+    parser.add_argument(
+        "-c",
+        "--config",
+        help=f"Config file to use (default: {default_config_path()})",
+        default=default_config_path(),
     )
     parser.add_argument(
-        "-d", "--directory", help="The base directory to scan", required=True
+        "-s",
+        "--save",
+        action="store_true",
+        help="Save the effective options to the config file",
     )
+    parser.add_argument("-d", "--directory", help="The base directory to scan")
     parser.add_argument(
         "-o",
         "--output",
         help="Output script (default: summaries.py in the scanned directory)",
-        default=None,
     )
-    parser.add_argument(
-        "-u", "--url", help="LLM endpoint URL", default=LLM_URL
-    )
-    parser.add_argument(
-        "-m", "--model", help="LLM model name", default=LLM_MODEL
-    )
+    parser.add_argument("-u", "--url", help=f"LLM endpoint URL (default: {LLM_URL})")
+    parser.add_argument("-m", "--model", help=f"LLM model name (default: {LLM_MODEL})")
     parser.add_argument(
         "-t",
         "--timeout",
         type=int,
         help=f"Seconds to wait per request (default: {LLM_TIMEOUT})",
-        default=LLM_TIMEOUT,
     )
     parser.add_argument(
         "-q",
         "--quiet",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         help="Do not echo each summary while working",
     )
     args = parser.parse_args()
 
-    basedir: str = args.directory
-    output_path: str = args.output or os.path.join(basedir, "summaries.py")
+    options: dict[str, Any] = dict(DEFAULTS)
+    options.update(load_config(args.config))
+    for key in DEFAULTS:
+        value: Any = getattr(args, key)
+        if value is not None:
+            options[key] = value
+
+    if args.save:
+        try:
+            save_config(args.config, options)
+        except OSError as ex:
+            stderr.write(f"[error] could not save config {args.config}: {ex}\n")
+            return 1
+        print(f"Saved options to: {args.config}")
+
+    if not options["directory"]:
+        if args.save:
+            return 0
+        parser.error(
+            "no directory to scan: pass -d/--directory "
+            f"(add --save to remember it in {args.config})"
+        )
+
+    basedir: str = os.path.expanduser(options["directory"])
+    output_path: str = os.path.expanduser(
+        options["output"] or os.path.join(basedir, "summaries.py")
+    )
 
     repos: dict[str, dict[str, Any]] = {}
     failed: list[str] = []
@@ -382,7 +470,11 @@ def main() -> int:
                 continue
             print(f"[{subdir}] summarizing {len(text)} chars...", flush=True)
             summary: str = pull_ai(
-                text, session, args.url, args.model, args.timeout
+                text,
+                session,
+                options["url"],
+                options["model"],
+                options["timeout"],
             )
             if summary:
                 repos[subdir] = {
@@ -390,17 +482,15 @@ def main() -> int:
                     "readme_chars": len(text),
                     "readme_truncated": truncated,
                 }
-                if not args.quiet:
+                if not options["quiet"]:
                     print(f"{subdir}: {summary}\n")
             else:
                 failed.append(subdir)
 
     if repos:
         data: dict[str, Any] = {
-            "generated": datetime.now(timezone.utc).strftime(
-                "%Y-%m-%d %H:%M:%SZ"
-            ),
-            "model": args.model,
+            "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ"),
+            "model": options["model"],
             "source_directory": os.path.abspath(basedir),
             "repos": repos,
         }
