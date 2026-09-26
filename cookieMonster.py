@@ -7,7 +7,7 @@ from base64 import b85decode, b85encode
 from hashlib import sha256
 from logging import error, warning
 from pickle import dumps, loads
-from typing import Any, Optional
+from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -139,7 +139,7 @@ def makeCookie(data: Any, key: bytes = b"") -> str:
         return ""
 
 
-def eatCookie(cookie: str) -> Optional[Any]:
+def eatCookie(cookie: str) -> Any | None:
     """Decrypt and deserialise a cookie string produced by makeCookie.
 
     Returns the original data on success.

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3 -uO
 
 from random import randint, seed, shuffle
-from typing import Optional
 
 
-class ForbiddenDelight(object):
+class ForbiddenDelight:
     """The class of all Forbidden Delights."""
 
     def __init__(self) -> None:
@@ -80,7 +79,7 @@ class ForbiddenDelight(object):
         self.things.append("a slime burger")
         self.things.append("a ripped magicians hat")
 
-    def Delight(self, svalue: Optional[int] = None) -> str:
+    def Delight(self, svalue: int | None = None) -> str:
         """Return a random Forbidden Delight"""
         seed(svalue)
         shuffle(self.beasts)

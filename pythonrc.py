@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ruff: noqa: E402 - CLEAN_NS must be captured before any import
+
 # The MIT License (MIT)
 #
 # Copyright (c) 2015-2021 Steven Fernandez
@@ -23,7 +23,6 @@
 # SOFTWARE.
 
 # CLEAN_NS must be captured before any imports, so imports can't be at the top.
-# ruff: noqa: E402
 
 # Keep a copy of the initial namespace, we'll need it later
 CLEAN_NS = globals().copy()
@@ -325,10 +324,13 @@ class ImprovedCompleter(rlcompleter.Completer):
             names = getattr(mod, "__all__", None) or dir(mod)
             seen = set(matches)
             for name in names:
-                if isinstance(name, str) and name.startswith(text):
-                    if name not in seen:
-                        seen.add(name)
-                        matches.append(name)
+                if (
+                    isinstance(name, str)
+                    and name.startswith(text)
+                    and name not in seen
+                ):
+                    seen.add(name)
+                    matches.append(name)
             return matches
 
         return []
@@ -445,7 +447,7 @@ class ImprovedConsole(InteractiveConsole):
             return super().runcode(code)
 
         try:
-            exec(code, self.locals)
+            exec(code, self.locals)  # noqa: S102 - this is a REPL
         except NameError as err:
             if self._auto_import(err, code):
                 return self.runcode(code)

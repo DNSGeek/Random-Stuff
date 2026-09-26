@@ -1,0 +1,13 @@
+target-version = "py311"
+
+[lint]
+# This repo is a collection of standalone scripts. These rules flag
+# intentional patterns used throughout them rather than bugs.
+ignore = [
+    "BLE001", # blind except: scripts deliberately log-and-continue
+    "DTZ006", # naive datetime.fromtimestamp: local time is intended
+    "EXE001", # shebang on non-executable file: modes are not tracked reliably
+    "LOG015", # root logger calls: fine for single-file scripts
+    "S110",   # try/except/pass: used for best-effort cleanup
+    "UP031",  # printf-style formatting: existing style
+]

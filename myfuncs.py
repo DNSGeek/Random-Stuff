@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from functools import wraps
 from types import FrameType
-from typing import Any, Optional, TypeVar
+from typing import Any, TypeVar
 
 logging.basicConfig(format="%(asctime)s %(message)s")
 
@@ -103,7 +103,6 @@ def daemonize() -> None:
 class TimedOutError(Exception):
     """Raised by the @timeout decorator when a function exceeds its time limit."""
 
-    pass
 
 
 def timeout(
@@ -126,7 +125,7 @@ def timeout(
     """
 
     def decorator(func: F) -> F:
-        def _timed_out(signum: int, frame: Optional[FrameType]) -> None:
+        def _timed_out(signum: int, frame: FrameType | None) -> None:
             raise TimedOutError(error_message)
 
         @wraps(func)

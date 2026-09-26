@@ -446,7 +446,9 @@ class MyQueue:
         timeout: float = 75.0,
     ) -> None:
         if not isinstance(host, str):
-            raise ValueError("host must be a string, got %s" % type(host).__name__)
+            raise ValueError(  # noqa: TRY004 - public API raises ValueError
+                "host must be a string, got %s" % type(host).__name__
+            )
         if (
             isinstance(port, bool)
             or not isinstance(port, int)
@@ -463,7 +465,7 @@ class MyQueue:
             if len(secret_key) < 16:
                 raise ValueError("secret_key must be at least 16 bytes")
         if isinstance(max_queue_size, bool) or not isinstance(max_queue_size, int):
-            raise ValueError(
+            raise ValueError(  # noqa: TRY004 - public API raises ValueError
                 "max_queue_size must be an integer, got %s"
                 % type(max_queue_size).__name__
             )

@@ -2,7 +2,7 @@ import logging
 import os
 import time
 from functools import wraps
-from typing import Any, Dict, Optional
+from typing import Any
 
 # Import the CherryPy modules.
 import cherrypy
@@ -28,11 +28,11 @@ DEBUG: bool = False
 
 
 # looks for files in the templates directory
-def render(filename: str, data: Dict) -> str:
+def render(filename: str, data: dict) -> str:
     return django.template.loader.get_template(filename).render(data)
 
 
-def _get_cookie() -> Optional[Any]:
+def _get_cookie() -> Any | None:
     """Read and decode the app cookie from the current request.
     Returns None if the cookie is absent or invalid."""
     morsel = cherrypy.request.cookie.get(myApp)
