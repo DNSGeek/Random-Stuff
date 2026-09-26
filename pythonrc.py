@@ -86,9 +86,7 @@ __version__ = "0.10.0"
 # followed by ': ', at the start of a line or right after '{' or ', '. Every
 # alternative is linear (no nested quantifiers), so a big dict of quote-heavy
 # strings can't make the colouring pass take seconds.
-_RE_DICT_KEYS = re.compile(
-    r"""(?<![^\s{,])('[^'\n]*'|"[^"\n]*"|\([^()\n]*\)): """
-)
+_RE_DICT_KEYS = re.compile(r"""(?<![^\s{,])('[^'\n]*'|"[^"\n]*"|\([^()\n]*\)): """)
 # - {name} / {dotted.name} fields in shell commands that get expanded from
 # the namespace. Anything else between braces is left for the shell.
 _RE_SHELL_FIELD = re.compile(r"\{([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\}")
@@ -157,9 +155,7 @@ def _submodules(parent: str, signature) -> list[str]:
         return []
     return [
         item.name
-        for item in pkgutil.iter_modules(
-            spec.submodule_search_locations, f"{parent}."
-        )
+        for item in pkgutil.iter_modules(spec.submodule_search_locations, f"{parent}.")
     ]
 
 
@@ -270,9 +266,7 @@ class ImprovedCompleter(rlcompleter.Completer):
         # result, indexes it by readline's `state`, and may .extend() it.
         if striptext:
             return [
-                name.removeprefix(striptext)
-                for name in names
-                if name.startswith(text)
+                name.removeprefix(striptext) for name in names if name.startswith(text)
             ]
         return [name for name in names if name.startswith(text)]
 
@@ -581,9 +575,7 @@ class ImprovedConsole(InteractiveConsole):
         backend = getattr(readline, "backend", None)
         if backend is None:
             backend = (
-                "editline"
-                if "libedit" in (readline.__doc__ or "")
-                else "readline"
+                "editline" if "libedit" in (readline.__doc__ or "") else "readline"
             )
         if backend == "editline":
             readline.parse_and_bind("bind ^I rl_complete")
@@ -653,17 +645,13 @@ class ImprovedConsole(InteractiveConsole):
         ssh connection.
         """
         prompt_color = yellow
-        sys.ps1 = prompt_color(
-            ">=> " if nested else ">>> ", readline_workaround=True
-        )
+        sys.ps1 = prompt_color(">=> " if nested else ">>> ", readline_workaround=True)
         sys.ps2 = red("... ", readline_workaround=True)
         # - if we are over a remote connection, modify the ps1
         if os.getenv("SSH_CONNECTION"):
             ssh_parts = os.getenv("SSH_CONNECTION", "").split()
             this_host = ssh_parts[2] if len(ssh_parts) >= 3 else "remote"
-            sys.ps1 = prompt_color(
-                f"[{this_host}]>>> ", readline_workaround=True
-            )
+            sys.ps1 = prompt_color(f"[{this_host}]>>> ", readline_workaround=True)
             sys.ps2 = red(f"[{this_host}]... ", readline_workaround=True)
 
     def init_pprint(self):
@@ -695,11 +683,7 @@ class ImprovedConsole(InteractiveConsole):
                 compact=True,
                 sort_dicts=config.PPRINT_SORT_DICTS,
             )
-            print(
-                color_dict(formatted)
-                if isinstance(value, dict)
-                else blue(formatted)
-            )
+            print(color_dict(formatted) if isinstance(value, dict) else blue(formatted))
             self.locals["_"] = value
 
         sys.displayhook = pprint_callback
@@ -836,9 +820,7 @@ class ImprovedConsole(InteractiveConsole):
     def toggle_auto_indent(self, _):
         """{config.TOGGLE_AUTO_INDENT_CMD} - Toggles the auto-indentation behavior"""
         hook = None if config.AUTO_INDENT else self.auto_indent_hook
-        msg = "# Auto-Indent has been {}abled\n".format(
-            "en" if hook else "dis"
-        )
+        msg = "# Auto-Indent has been {}abled\n".format("en" if hook else "dis")
         config.AUTO_INDENT = bool(hook)
 
         if hook is None:
@@ -869,9 +851,7 @@ class ImprovedConsole(InteractiveConsole):
                 from urllib.parse import quote_plus
 
                 term = line.rstrip(f"{config.DOC_CMD}.(").replace(".", " ")
-                webbrowser.open(
-                    config.DOC_URL.format(sys=sys, term=quote_plus(term))
-                )
+                webbrowser.open(config.DOC_URL.format(sys=sys, term=quote_plus(term)))
                 line = ""
             else:
                 line = line.rstrip(f"{config.DOC_CMD}.(")
@@ -949,9 +929,7 @@ class ImprovedConsole(InteractiveConsole):
 
             try:
                 self.locals["repl_future"] = self.loop.create_task(coro)
-                asyncio.futures._chain_future(
-                    self.locals["repl_future"], future
-                )
+                asyncio.futures._chain_future(self.locals["repl_future"], future)
             except BaseException as exc:
                 future.set_exception(exc)
 
@@ -997,9 +975,7 @@ class ImprovedConsole(InteractiveConsole):
         """Writes lines to a temp file and returns the filename."""
         from tempfile import NamedTemporaryFile
 
-        with NamedTemporaryFile(
-            mode="w+", suffix=".py", delete=False
-        ) as tempbuf:
+        with NamedTemporaryFile(mode="w+", suffix=".py", delete=False) as tempbuf:
             tempbuf.write("\n".join(lines))
         return tempbuf.name
 
@@ -1051,9 +1027,7 @@ class ImprovedConsole(InteractiveConsole):
                         self.resetbuffer()
 
             if not quiet:
-                self.write(
-                    cyan(f"... {stmt}", bold=(not self._skip_subsequent))
-                )
+                self.write(cyan(f"... {stmt}", bold=(not self._skip_subsequent)))
 
             if self._skip_subsequent:
                 self.session_history.append(stmt)
@@ -1116,9 +1090,7 @@ class ImprovedConsole(InteractiveConsole):
                 if (obj := self.lookup(arg)) is not None:
                     filename = inspect.getsourcefile(obj)
                     if filename is None:
-                        return self.writeline(
-                            f"No source file available for {arg}"
-                        )
+                        return self.writeline(f"No source file available for {arg}")
                     _, line_no = inspect.getsourcelines(obj)
                     line_num_opt = config.LINE_NUM_OPT.format(line_no=line_no)
                 else:
@@ -1164,8 +1136,7 @@ class ImprovedConsole(InteractiveConsole):
                 return None
             if rc != 0:
                 return self.writeline(
-                    f"{config.EDITOR} exited with an error code. "
-                    "Skipping execution."
+                    f"{config.EDITOR} exited with an error code. Skipping execution."
                 )
             # - if HISTFILE contents were edited (ie: EDIT_CMD in a brand
             # new session), don't print commented out lines
@@ -1260,9 +1231,7 @@ class ImprovedConsole(InteractiveConsole):
                     if not out.endswith("\n"):
                         out += "\n"
                     sys.stdout.write(
-                        red(out)
-                        if completed.returncode
-                        else green(out, bold=False)
+                        red(out) if completed.returncode else green(out, bold=False)
                     )
                 if err := completed.stderr:
                     if not err.endswith("\n"):
@@ -1307,8 +1276,7 @@ class ImprovedConsole(InteractiveConsole):
 
         if not arg:
             return self.writeline(
-                "source list command requires an "
-                f"argument (eg: {config.LIST_CMD} foo)"
+                f"source list command requires an argument (eg: {config.LIST_CMD} foo)"
             )
         obj = self.lookup(arg)
         if obj is None:
@@ -1318,8 +1286,7 @@ class ImprovedConsole(InteractiveConsole):
         except TypeError:
             # - builtins and other C-level objects have no python source
             self.writeline(
-                f"{arg}: no python source available "
-                f"({type(obj).__name__} object)"
+                f"{arg}: no python source available ({type(obj).__name__} object)"
             )
         except OSError as e:
             self.writeline(e)
@@ -1357,9 +1324,7 @@ class ImprovedConsole(InteractiveConsole):
         if self._venv_rc_status is None:
             try:
                 with open(config.VENV_RC) as venv_rc:
-                    self._exec_from_file(
-                        venv_rc, quiet=True, skip_history=True
-                    )
+                    self._exec_from_file(venv_rc, quiet=True, skip_history=True)
             except OSError:
                 self._venv_rc_status = cyan("(no venv rc found)")
             else:
@@ -1382,9 +1347,7 @@ class ImprovedConsole(InteractiveConsole):
         retries = 2
         while retries:
             try:
-                super().interact(
-                    banner=banner, exitmsg=exitmsg
-                )
+                super().interact(banner=banner, exitmsg=exitmsg)
             except SystemExit:
                 # Fixes #2: exit when 'quit()' invoked
                 break
