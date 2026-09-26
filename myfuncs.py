@@ -104,7 +104,6 @@ class TimedOutError(Exception):
     """Raised by the @timeout decorator when a function exceeds its time limit."""
 
 
-
 def timeout(
     seconds: float = 10.0,
     error_message: str = os.strerror(errno.ETIME),

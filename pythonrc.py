@@ -324,11 +324,7 @@ class ImprovedCompleter(rlcompleter.Completer):
             names = getattr(mod, "__all__", None) or dir(mod)
             seen = set(matches)
             for name in names:
-                if (
-                    isinstance(name, str)
-                    and name.startswith(text)
-                    and name not in seen
-                ):
+                if isinstance(name, str) and name.startswith(text) and name not in seen:
                     seen.add(name)
                     matches.append(name)
             return matches
