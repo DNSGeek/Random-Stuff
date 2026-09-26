@@ -1,5 +1,6 @@
 name: Code Formatting and Linting
-
+claude_args: |
+  --allowedTools "Bash(pip install:*),Bash(ruff:*),Bash(clang-tidy:*),Bash(shellcheck:*)"
 on:
   push:
     branches:
