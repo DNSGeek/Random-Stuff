@@ -106,7 +106,7 @@ def fetch_context_limit() -> int:
 
     except TimeoutError:
         stderr.write(
-            f"[warning] Timed out querying model context size — "
+            "[warning] Timed out querying model context size — "
             f"using default README limit of {README_LIMIT_DEFAULT} chars\n"
         )
     except (URLError, ValueError, KeyError) as ex:

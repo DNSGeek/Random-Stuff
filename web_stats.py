@@ -27,8 +27,6 @@ webbase: str = "/var/www/html/stats/"
 # Save the collected data between invocations
 def handler(signum, frame):
     logging.info("Signal received. Writing data and exiting.")
-    global base
-    global host_stats
     for host in host_stats:
         logging.info(f"Writing stats for {host}")
         with open(f"{base}/{host}.pickle", "wb") as f:
@@ -112,7 +110,6 @@ def pull_stats(
 def process_data(data: Dict) -> None:
     hostname = data["hostname"]
     logging.debug(f"Processing data for {hostname}")
-    global host_stats
     myStats: stats = host_stats[hostname]
     myStats.delOldVals()
     for name in ["cpu", "process_counts", "load_avg", "memory", "vm"]:
@@ -124,8 +121,6 @@ def process_data(data: Dict) -> None:
 # Walk through the data and create pretty graphs
 def generate_graphs(hostname: str) -> None:
     logging.debug(f"Entering generate_graphs for {hostname}")
-    global host_stats
-    global webbase
     myStats: stats = host_stats[hostname]
     filepath: str = f"{webbase}{hostname}_"
     for name in myStats.retTypes():
@@ -288,7 +283,6 @@ if __name__ == "__main__":
     signal.signal(signal.SIGHUP, handler)
     signal.signal(signal.SIGINT, handler)
     signal.signal(signal.SIGTERM, handler)
-    global host_stats
     # Start the background threads to pull the data
     host_stats: Dict[str, stats] = {}
     workerList: List[threading.Thread] = []

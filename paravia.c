@@ -771,6 +771,7 @@ int Random(int hi) {
  * =========================================================================*/
 void InitializePlayer(player *Me, int year, int city, int level,
                       const char *name, bool MorF) {
+  memset(Me, 0, sizeof(*Me));
   Me->Cathedral = 0;
   strncpy(Me->City, CityList[city], sizeof(Me->City) - 1);
   Me->City[sizeof(Me->City) - 1] = '\0';
