@@ -363,7 +363,7 @@ class MyQueue:
                     f"Database at {self._db_path} has schema version "
                     f"{current_version}, newer than this code supports "
                     f"({_SCHEMA_VERSION}). Refusing to open to avoid "
-                    f"corruption."
+                    "corruption."
                 )
 
             existing_tables = {
@@ -681,7 +681,7 @@ class MyQueue:
             rows = conn.execute(
                 f"DELETE FROM {table} "
                 f"WHERE id = (SELECT id FROM {table} ORDER BY id LIMIT 1) "
-                f"RETURNING payload"
+                "RETURNING payload"
             ).fetchall()
             return rows[0][0] if rows else None
 

@@ -21,6 +21,9 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+# CLEAN_NS must be captured before any imports, so imports can't be at the top.
+# ruff: noqa: E402
+
 # Keep a copy of the initial namespace, we'll need it later
 CLEAN_NS = globals().copy()
 
