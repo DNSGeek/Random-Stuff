@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402 - CLEAN_NS must be captured before any import
 # The MIT License (MIT)
 #
 # Copyright (c) 2015-2021 Steven Fernandez

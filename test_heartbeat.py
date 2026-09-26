@@ -442,7 +442,7 @@ def test_graceful_goodbye_skips_grace_period():
         assert ok, f"b never promoted within {GRACE/2:.1f}s; elapsed={elapsed:.1f}s"
         assert elapsed < GRACE, (
             f"b promoted at {elapsed:.1f}s but grace was {GRACE}s — "
-            f"goodbye notification didn't bypass grace"
+            "goodbye notification didn't bypass grace"
         )
         print(f"  OK: b promoted in {elapsed:.2f}s (grace was {GRACE}s)")
     finally:
