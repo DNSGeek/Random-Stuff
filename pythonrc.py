@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # The MIT License (MIT)
 #
 # Copyright (c) 2015-2021 Steven Fernandez
@@ -42,6 +42,8 @@ This file creates an InteractiveConsole instance, which provides:
     capturing the result into the '_' variable
   * convenient printing of doc stings and search for entries in online docs
   * auto-execution of a virtual env specific (`.venv_rc.py`) file at startup
+  * auto-import of undefined names that match a top-level module
+  * an asyncio event loop with a nested REPL where top-level await works
 
 If you have any other good ideas please feel free to submit issues/pull requests.
 
@@ -77,31 +79,86 @@ from code import InteractiveConsole
 from functools import cached_property, lru_cache, partial, wraps
 from types import SimpleNamespace
 
-__version__ = "0.9.1"
+__version__ = "0.10.0"
 
 # Pre-compiled regex constants - kept at module level to avoid recompilation
-_RE_NAME_ERROR = re.compile(r"'(\w+)' is not defined")
-_RE_DICT_KEYS = re.compile(r'([\'\("]+(.*?[\'\)"]: ))+?')
+# - dict keys in pprint output: a quoted string or a parenthesised tuple
+# followed by ': ', at the start of a line or right after '{' or ', '. Every
+# alternative is linear (no nested quantifiers), so a big dict of quote-heavy
+# strings can't make the colouring pass take seconds.
+_RE_DICT_KEYS = re.compile(
+    r"""(?<![^\s{,])('[^'\n]*'|"[^"\n]*"|\([^()\n]*\)): """
+)
+# - {name} / {dotted.name} fields in shell commands that get expanded from
+# the namespace. Anything else between braces is left for the shell.
+_RE_SHELL_FIELD = re.compile(r"\{([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\}")
 
 
-@lru_cache(None)
-def _pkg_contents(pkg: str) -> list[str]:
-    """Return sub-module names for *pkg*. Cached at module level so the
-    lru_cache key is just the package name string, not an unhashable instance.
+def _path_signature() -> tuple:
+    """Cheap fingerprint of sys.path: each entry with its mtime.
+
+    A ``pip install`` into site-packages changes that directory's mtime, so
+    keying the module index on this makes newly installed packages visible
+    to completion and auto-import without an explicit refresh. A dozen
+    stat() calls is noise next to a readline round trip.
+    """
+    signature = []
+    for entry in sys.path:
+        try:
+            mtime = os.stat(entry or os.getcwd()).st_mtime_ns
+        except OSError:
+            mtime = None
+        signature.append((entry, mtime))
+    return tuple(signature)
+
+
+@lru_cache(maxsize=4)
+def _scan_modules(signature) -> tuple[frozenset[str], frozenset[str]]:
+    """One filesystem scan returning (packages, modules) on the module path.
+
+    pkgutil.iter_modules() walks the entire module path, so both sets are
+    built in a single pass. *signature* is only used as the cache key.
+    """
+    import pkgutil
+
+    pkgs: set[str] = set()
+    mods: set[str] = set()
+    for item in pkgutil.iter_modules():
+        if not item.name.startswith("_"):
+            mods.add(item.name)
+            if item.ispkg:
+                pkgs.add(item.name)
+    for name in sys.builtin_module_names:
+        if not name.startswith("_"):
+            mods.add(name)
+    return frozenset(pkgs), frozenset(mods)
+
+
+@lru_cache(maxsize=256)
+def _submodules(parent: str, signature) -> list[str]:
+    """Direct children of package *parent*, as dotted names.
+
+    Lists one level with pkgutil.iter_modules() instead of walking the whole
+    tree with walk_packages(): the latter imports every sub-package it
+    visits, which runs arbitrary code and can take seconds on numpy-sized
+    packages. find_spec() still imports *parent* itself, which the user is
+    about to do anyway. *signature* is only used as the cache key.
     """
     import importlib.util
     import pkgutil
 
-    spec = importlib.util.find_spec(pkg)
-    if spec is None:
+    try:
+        spec = importlib.util.find_spec(parent)
+    except Exception:
+        # find_spec imports the parent packages of a dotted name, and any
+        # of them may fail. A completer must never raise.
         return []
-    locs = (
-        [spec.origin] if not spec.parent else spec.submodule_search_locations
-    )
+    if spec is None or not spec.submodule_search_locations:
+        return []
     return [
         item.name
-        for item in pkgutil.walk_packages(
-            locs, f"{pkg}.", onerror=lambda _: None
+        for item in pkgutil.iter_modules(
+            spec.submodule_search_locations, f"{parent}."
         )
     ]
 
@@ -109,15 +166,11 @@ def _pkg_contents(pkg: str) -> list[str]:
 config = SimpleNamespace(
     ONE_INDENT="    ",  # what should we use for indentation ?
     HISTFILE=os.path.expanduser("~/.python_history"),
-    # - max number of entries kept in HISTFILE. readline appends to the file
-    # on every exit but never truncates it, so an uncapped history file grows
-    # forever and eventually dominates interpreter startup. Set to -1 for the
-    # old unlimited behaviour.
+    # - max number of entries kept in HISTFILE. readline truncates the file
+    # to this many entries every time it writes it (see set_history_length
+    # in init_readline), so the file can't grow without bound. Set to -1 for
+    # unlimited.
     HISTSIZE=10000,
-    # - only rewrite HISTFILE once it exceeds HISTSIZE by this factor.
-    # Trimming means reading the whole file, so do it rarely rather than on
-    # every exit.
-    HIST_TRIM_FACTOR=1.5,
     EDITOR=os.getenv("EDITOR", "vi"),
     SHELL=os.getenv("SHELL", "/bin/bash"),
     EDIT_CMD=r"\e",
@@ -142,47 +195,20 @@ config = SimpleNamespace(
     ENABLE_AUTO_IMPORTS=True,
     # - Start/Stop the asyncio loop in the interpreter (similar to `python -m asyncio`)
     TOGGLE_ASYNCIO_LOOP_CMD=r"\A",
+    # - colour output. None = auto: only when stdout is a tty, NO_COLOR is
+    # unset and TERM is not "dumb". True/False force it on/off.
+    USE_COLOR=None,
+    # - pprint sorts dict keys by default; False keeps insertion order, like
+    # repr() does.
+    PPRINT_SORT_DICTS=False,
+    # - top-level modules that are never auto-imported on NameError. A typo
+    # that resolves to `antigravity` opens a browser and `this` prints the
+    # Zen of Python, which is not what anyone wants from a typo.
+    AUTO_IMPORT_DENYLIST=frozenset({"antigravity", "this"}),
 )
 
 # Color functions. These get initialized in init_color_functions() later
 red = green = yellow = blue = purple = cyan = grey = str
-
-
-def _trim_history_file():
-    """Keep HISTFILE from growing without bound.
-
-    readline appends this session's lines to HISTFILE on exit but never
-    truncates it, and python's readline module does not expose GNU readline's
-    history_truncate_file(), so do it by hand. Only the last HISTSIZE lines
-    are kept.
-
-    Note: like the append-on-exit design this races with concurrent sessions.
-    The rename is atomic, but a session that appends between our read and our
-    rename will lose those lines. Trimming is rare enough (see
-    HIST_TRIM_FACTOR) that this is an acceptable trade for a history file.
-    """
-    limit = config.HISTSIZE
-    if not limit or limit < 0:
-        return
-    try:
-        with open(config.HISTFILE, "rb") as histfile:
-            lines = histfile.readlines()
-    except OSError:
-        return
-
-    if len(lines) <= limit * config.HIST_TRIM_FACTOR:
-        return
-
-    tmpfile = f"{config.HISTFILE}.trim.{os.getpid()}"
-    try:
-        with open(tmpfile, "wb") as out:
-            out.writelines(lines[-limit:])
-        os.replace(tmpfile, config.HISTFILE)
-    except OSError:
-        try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
 
 
 class ImprovedCompleter(rlcompleter.Completer):
@@ -198,39 +224,27 @@ class ImprovedCompleter(rlcompleter.Completer):
         readline.set_completer_delims(completer_delims)
         self.matches = []
 
-    def pkg_contents(self, pkg: str) -> list[str]:
-        """Return sub-module names for *pkg* via the module-level cache."""
-        return _pkg_contents(pkg)
-
-    @cached_property
-    def _module_index(self) -> tuple[frozenset, frozenset]:
-        """Single filesystem scan building both pkglist and modlist.
-
-        pkgutil.iter_modules() walks the entire module path, so calling it
-        twice (once for pkglist, once for modlist) doubles the I/O cost.
-        This property does one pass and caches both results together.
-        """
-        import pkgutil
-
-        pkgs: set[str] = set()
-        mods: set[str] = set()
-        for item in pkgutil.iter_modules():
-            if not item.name.startswith("_"):
-                mods.add(item.name)
-                if item.ispkg:
-                    pkgs.add(item.name)
-        for name in sys.builtin_module_names:
-            if not name.startswith("_"):
-                mods.add(name)
-        return frozenset(pkgs), frozenset(mods)
-
-    @cached_property
+    # The module index is cached at module level, keyed on a fingerprint of
+    # sys.path, so it is rebuilt only when the path (or a directory on it)
+    # changes - eg: after a `pip install` from the shell command.
+    @property
     def pkglist(self) -> frozenset[str]:
-        return self._module_index[0]
+        return _scan_modules(_path_signature())[0]
 
-    @cached_property
+    @property
     def modlist(self) -> frozenset[str]:
-        return self._module_index[1]
+        return _scan_modules(_path_signature())[1]
+
+    def submodules(self, parent: str) -> list[str]:
+        """Direct children of package *parent* as dotted names."""
+        return _submodules(parent, _path_signature())
+
+    def module_matches(self, text: str) -> list[str]:
+        """Complete a (possibly dotted) module name that is being typed."""
+        if "." in text:
+            parent, _, _ = text.rpartition(".")
+            return self.startswith_filter(text, self.submodules(parent))
+        return self.startswith_filter(text, self.modlist)
 
     @cached_property
     def exception_names(self) -> list[str]:
@@ -278,45 +292,46 @@ class ImprovedCompleter(rlcompleter.Completer):
     def get_import_matches(self, text, words):
         import importlib
 
-        if any(
-            [
-                (len(words) == 2 and not text),
-                (len(words) == 3 and text and "import".startswith(text)),
-            ]
+        if words[0] == "import":
+            # import p<tab> / import pkg.su<tab> / import a, b<tab>
+            if text or len(words) == 1:
+                return self.module_matches(text)
+            return []
+
+        # - everything below is a `from ...` line
+        if len(words) == 1 or (len(words) == 2 and text):
+            # from p<tab> / from pkg.su<tab>
+            return self.module_matches(text)
+
+        if (len(words) == 2 and not text) or (
+            len(words) == 3 and text and "import".startswith(text)
         ):
+            # from pkg <tab> / from pkg im<tab>
             return ["import "]
 
-        if len(words) <= 2:
-            # import p<tab> / from p<tab>
-            modname, _, _ = text.partition(".")
-            if modname in self.pkglist:
-                return self.startswith_filter(text, self.pkg_contents(modname))
-            return self.startswith_filter(text, self.modlist)
-
         if len(words) >= 3 and words[2] == "import":
-            # from pkg.sub import na<tab>
+            # from pkg.sub import na<tab>: the package's direct sub-modules
+            # (one level, so no `sub.deeper` names that are invalid here)
+            # plus the names the module itself defines.
             namespace = words[1]
-            pkg, _, _ = namespace.partition(".")
-            if pkg in self.pkglist:
-                # from pkg.sub import na<tab>
-                match_text = ".".join((namespace, text))
-                if matches := self.startswith_filter(
-                    match_text,
-                    self.pkg_contents(pkg),
-                    striptext=f"{namespace}.",
-                ):
-                    return matches
-
-            # from module import na<ta>
+            prefix = f"{namespace}."
+            matches = self.startswith_filter(
+                prefix + text, self.submodules(namespace), striptext=prefix
+            )
             # Importing here runs arbitrary module-level code, which may fail
             # for any reason. A completer must never raise.
             try:
                 mod = importlib.import_module(namespace)
             except Exception:
-                return []
-            return self.startswith_filter(
-                text, getattr(mod, "__all__", dir(mod))
-            )
+                return matches
+            names = getattr(mod, "__all__", None) or dir(mod)
+            seen = set(matches)
+            for name in names:
+                if isinstance(name, str) and name.startswith(text):
+                    if name not in seen:
+                        seen.add(name)
+                        matches.append(name)
+            return matches
 
         return []
 
@@ -350,10 +365,8 @@ class ImprovedCompleter(rlcompleter.Completer):
                 self.matches = self.global_matches(text)
 
             if len(self.matches) == 1:
+                # - a single directory match: descend into it right away
                 match = self.matches[0]
-                if keyword.iskeyword(match) and match in ("raise", "except"):
-                    self.matches.extend(self.exception_names)
-
                 if match and match.endswith(os.path.sep):
                     self.matches.extend(self.get_path_matches(match))
 
@@ -367,7 +380,7 @@ def _doc_to_usage(method):
     @wraps(method)
     def inner(self, arg):
         arg = arg.strip()
-        if arg.startswith(("-h", "--help")):
+        if arg.split(None, 1)[:1] in (["-h"], ["--help"]):
             # The docstrings are templates referencing `config`, so they have
             # to be formatted before display or the user sees raw braces.
             usage = method.__doc__.format(config=config).strip()
@@ -403,14 +416,26 @@ class ImprovedConsole(InteractiveConsole):
       term at {DOC_URL}
       (eg: try webbrowser.open??)
 
-    * Open the your editor with current session history, source code of
+    * Open your editor with current session history, source code of
       objects or arbitrary files, using the '{EDIT_CMD}' command.
 
     * List source code for objects using the '{LIST_CMD}' command.
 
-    * Execute shell commands using the '{SH_EXEC}' command.
+    * Execute shell commands using the '{SH_EXEC}' command, or
+      '{SH_EXEC}{SH_EXEC}' for interactive ones (editors, pagers, ...).
 
-    Try `<cmd> -h` for any of the commands to learn more.
+    * Toggle auto-indentation (eg: before pasting a block of code) with
+      the '{TOGGLE_AUTO_INDENT_CMD}' command.
+
+    * Start an asyncio event loop, with a nested REPL in which top-level
+      'await' works, using the '{TOGGLE_ASYNCIO_LOOP_CMD}' command.
+
+    * An undefined name that matches a top-level module is imported
+      automatically and the statement re-run (eg: `os.getcwd()` without a
+      prior `import os`). ENABLE_AUTO_IMPORTS in the config turns this off.
+
+    Try `<cmd> -h`, or '{HELP_CMD} <cmd>', for any of the commands to learn
+    more.
 
     The EDITOR, SHELL, command names and more can be changed in the
     config declaration at the top of this file. Make this your own !
@@ -418,45 +443,62 @@ class ImprovedConsole(InteractiveConsole):
 
     def runcode_sync(self, code):
         """Wrapper around super().runcode() to enable auto-importing"""
-        import importlib
-
         if not config.ENABLE_AUTO_IMPORTS:
             return super().runcode(code)
 
         try:
             exec(code, self.locals)
         except NameError as err:
-            # Auto-importing re-executes the whole statement, so only do it
-            # when the NameError came from the top-level statement itself.
-            # If it was raised inside a called function, that function has
-            # already run and re-running it would repeat its side effects.
-            tb = err.__traceback__
-            while tb.tb_next is not None:
-                tb = tb.tb_next
-            if tb.tb_frame.f_code is code:
-                if match := _RE_NAME_ERROR.search(err.args[0]):
-                    name = match.group(1)
-                    if name in self.completer.modlist:
-                        try:
-                            mod = importlib.import_module(name)
-                        except ImportError:
-                            # Present on the module path but not importable.
-                            mod = None
-                        if mod is not None:
-                            print(
-                                grey(
-                                    f"# imported undefined module: {name} "
-                                    "(re-running statement)",
-                                    bold=False,
-                                )
-                            )
-                            self.locals[name] = mod
-                            return self.runcode(code)
+            if self._auto_import(err, code):
+                return self.runcode(code)
             self.showtraceback()
         except SystemExit:
             raise
         except Exception:
             self.showtraceback()
+
+    def _auto_import(self, err, code):
+        """Import the module an undefined name refers to, if there is one.
+
+        Returns True when the module was bound in the namespace and the
+        statement should be re-run.
+        """
+        import importlib
+
+        # Auto-importing re-executes the whole statement, so only do it
+        # when the NameError came from the top-level statement itself.
+        # If it was raised inside a called function, that function has
+        # already run and re-running it would repeat its side effects.
+        tb = err.__traceback__
+        while tb.tb_next is not None:
+            tb = tb.tb_next
+        if tb.tb_frame.f_code is not code:
+            return False
+
+        # NameError.name (python 3.10+) is None when the error was raised
+        # by hand rather than by a failed name lookup.
+        name = getattr(err, "name", None)
+        if (
+            not name
+            or name in config.AUTO_IMPORT_DENYLIST
+            or name not in self.completer.modlist
+        ):
+            return False
+        try:
+            mod = importlib.import_module(name)
+        except Exception as exc:
+            # Anything can go wrong at import time, not just ImportError,
+            # and an exception escaping this handler would crash the session.
+            print(grey(f"# auto-import of {name} failed: {exc!r}", bold=False))
+            return False
+        print(
+            grey(
+                f"# imported undefined module: {name} (re-running statement)",
+                bold=False,
+            )
+        )
+        self.locals[name] = mod
+        return True
 
     runcode = runcode_sync
 
@@ -464,7 +506,10 @@ class ImprovedConsole(InteractiveConsole):
         self.session_history = []  # This holds the last executed statements
         self.buffer = []  # This holds the statement to be executed
         self._indent = ""
+        self._skip_subsequent = False
+        self._venv_rc_status = None
         self.loop = None
+        self.repl_thread = None
         super().__init__(*args, **kwargs)
 
         self.init_color_functions()
@@ -480,29 +525,45 @@ class ImprovedConsole(InteractiveConsole):
             config.TOGGLE_AUTO_INDENT_CMD: self.toggle_auto_indent,
             config.TOGGLE_ASYNCIO_LOOP_CMD: self.toggle_asyncio,
         }
-        # - regex to identify and extract commands and their arguments
+        # - regex to identify and extract commands and their arguments.
+        # Everything after the command is its argument, parentheses
+        # included: `!python -c "print(1)"` must reach the shell intact.
         self.commands_re = re.compile(
-            r"(?P<cmd>{})\s*(?P<args>[^(]*)".format(
+            r"(?P<cmd>{})\s*(?P<args>.*)".format(
                 "|".join(re.escape(cmd) for cmd in self.commands)
             )
         )
 
     def init_color_functions(self):
         """Populates globals dict with some helper functions for colorizing text"""
+        use_color = config.USE_COLOR
+        if use_color is None:
+            # - honour https://no-color.org and keep escape codes out of
+            # pipes and dumb terminals
+            isatty = getattr(sys.stdout, "isatty", None)
+            use_color = (
+                isatty is not None
+                and isatty()
+                and os.getenv("NO_COLOR") is None
+                and os.getenv("TERM") != "dumb"
+            )
 
         def colorize(color_code, text, bold=True, readline_workaround=False):
             reset = "\033[0m"
-            color = "\033[{0}{1}m".format("1;" if bold else "", color_code)
+            color = "\033[{}{}m".format("1;" if bold else "", color_code)
             # - reason for readline_workaround: http://bugs.python.org/issue20359
             if readline_workaround:
                 return f"\001{color}\002{text}\001{reset}\002"
             return f"{color}{text}{reset}"
 
+        def plain(color_code, text, bold=True, readline_workaround=False):
+            return str(text)
+
         g = globals()
         for code, color in enumerate(
             ["red", "green", "yellow", "blue", "purple", "cyan", "grey"], 31
         ):
-            g[color] = partial(colorize, code)
+            g[color] = partial(colorize if use_color else plain, code)
 
     def init_readline(self):
         """Activates history and tab completion"""
@@ -515,8 +576,16 @@ class ImprovedConsole(InteractiveConsole):
 
         # Reading the initialization (config) file may not be enough to set a
         # completion key, so we set one first and then read the file.
-        readline_doc = getattr(readline, "__doc__", "")
-        if readline_doc is not None and "libedit" in readline_doc:
+        # readline.backend is python 3.13+; older versions only reveal
+        # libedit through the module docstring.
+        backend = getattr(readline, "backend", None)
+        if backend is None:
+            backend = (
+                "editline"
+                if "libedit" in (readline.__doc__ or "")
+                else "readline"
+            )
+        if backend == "editline":
             readline.parse_and_bind("bind ^I rl_complete")
         else:
             readline.parse_and_bind("tab: complete")
@@ -534,6 +603,10 @@ class ImprovedConsole(InteractiveConsole):
         # implement append_history_file, so we fall back to rewriting the
         # full history file on exit (same behaviour as the default site
         # module, but still better than crashing with an AttributeError).
+        # Either way readline itself truncates the file to HISTSIZE entries
+        # on every write (see set_history_length below), so nothing else
+        # needs to trim it - and must not: libedit's file starts with a
+        # marker line that a naive line-based trim would drop.
         _has_append_history = hasattr(readline, "append_history_file")
 
         def append_history(len_at_start):
@@ -549,10 +622,6 @@ class ImprovedConsole(InteractiveConsole):
                     # session). write_history_file() creates it.
                     pass
             readline.write_history_file(config.HISTFILE)
-
-        # - atexit handlers run LIFO, so registering the trim before the
-        # append means the append runs first and the trim sees the final file.
-        atexit.register(_trim_history_file)
 
         if readline.get_current_history_length() == 0:
             # If no history was loaded, default to .python_history.
@@ -602,43 +671,59 @@ class ImprovedConsole(InteractiveConsole):
         color_dict = partial(_RE_DICT_KEYS.sub, lambda m: purple(m.group()))
 
         def pprint_callback(value):
-            if value is not None:
-                # pprint pulls in dataclasses, so import it on first use
-                # rather than at startup.
-                import pprint
+            # - like the default displayhook: a None result is neither
+            # printed nor bound to '_', so '_' keeps the last real value
+            if value is None:
+                return
+            # pprint pulls in dataclasses, so import it on first use
+            # rather than at startup.
+            import pprint
 
-                # os.get_terminal_size() returns (columns, lines), so the
-                # width is .columns. It raises OSError (not AttributeError)
-                # when stdout is not a tty, eg. under a pipe.
+            # os.get_terminal_size() returns (columns, lines), so the
+            # width is .columns. It raises OSError (not AttributeError)
+            # when stdout is not a tty, eg. under a pipe.
+            try:
+                cols = os.get_terminal_size().columns
+            except OSError:
                 try:
-                    cols = os.get_terminal_size().columns
-                except OSError:
-                    try:
-                        cols = int(os.environ["COLUMNS"])
-                    except (KeyError, ValueError):
-                        cols = 80
-                formatted = pprint.pformat(value, width=cols, compact=True)
-                print(
-                    color_dict(formatted)
-                    if issubclass(type(value), dict)
-                    else blue(formatted)
-                )
+                    cols = int(os.environ["COLUMNS"])
+                except (KeyError, ValueError):
+                    cols = 80
+            formatted = pprint.pformat(
+                value,
+                width=cols,
+                compact=True,
+                sort_dicts=config.PPRINT_SORT_DICTS,
+            )
+            print(
+                color_dict(formatted)
+                if isinstance(value, dict)
+                else blue(formatted)
+            )
             self.locals["_"] = value
 
         sys.displayhook = pprint_callback
 
-    def _stop_asyncio_loop(self):
+    def _stop_asyncio_loop(self, announce=True):
+        import ast
+
         self.loop.stop()
-        del self.locals["repl_future"]
-        del self.locals["repl_future_interrupted"]
+        self.locals.pop("repl_future", None)
+        self.locals.pop("repl_future_interrupted", None)
+        # Without a loop a top-level `await` can't run, so stop accepting
+        # it. Otherwise the statement compiles to a coroutine that exec()
+        # silently discards, and nothing in it runs - not even the code
+        # before the await.
+        self.compile.compiler.flags &= ~ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
         self.runcode = self.runcode_sync
         self.loop = None
-        self.writeline(
-            grey(
-                "Stopped the asyncio loop. "
-                f"Use {config.TOGGLE_ASYNCIO_LOOP_CMD} to restart it."
+        if announce:
+            self.writeline(
+                grey(
+                    "Stopped the asyncio loop. Exit this nested REPL (Ctrl-D) "
+                    "to return to the main prompt."
+                )
             )
-        )
 
     def _init_nested_repl(self):
         import ast
@@ -674,7 +759,11 @@ class ImprovedConsole(InteractiveConsole):
                     category=RuntimeWarning,
                 )
                 if self.loop and self.loop.is_running():
-                    self.loop.call_soon_threadsafe(self._stop_asyncio_loop)
+                    # - the user already left the nested REPL, so don't
+                    # tell them to
+                    self.loop.call_soon_threadsafe(
+                        partial(self._stop_asyncio_loop, announce=False)
+                    )
 
                 self.init_prompt()
 
@@ -682,39 +771,59 @@ class ImprovedConsole(InteractiveConsole):
         self.repl_thread.start()
 
     def _start_asyncio_loop(self):
-        self.locals["repl_future"] = None
-        self.locals["repl_future_interrupted"] = False
-        self.runcode = self.runcode_async
-
         while self.loop is not None:
             try:
                 self.loop.run_forever()
             except KeyboardInterrupt:
                 if (
-                    repl_future := self.locals["repl_future"]
+                    repl_future := self.locals.get("repl_future")
                 ) and not repl_future.done():
                     repl_future.cancel()
                     self.locals["repl_future_interrupted"] = True
+
+        # The loop is gone, but the nested REPL thread may still be reading
+        # stdin (eg: the loop was stopped with the toggle command from
+        # inside it). Wait for it to exit, otherwise this thread and that
+        # one both read from the same stdin. Ctrl-C lands in this thread
+        # while we wait and must not cut the wait short.
+        while self.repl_thread.is_alive():
+            try:
+                self.repl_thread.join()
+            except KeyboardInterrupt:
+                pass
 
     @_doc_to_usage
     def toggle_asyncio(self, _):
         """{config.TOGGLE_ASYNCIO_LOOP_CMD} - Starts/stops the asyncio loop
 
-        Configures the interpreter in a similar manner to `python -m asyncio`
+        Configures the interpreter in a similar manner to `python -m asyncio`:
+        an event loop runs in the main thread and a nested REPL, in which
+        top-level `await` works, runs in a separate thread. Typing the
+        command again inside the nested REPL stops the loop; exit the
+        nested REPL (Ctrl-D) to get back to the main prompt.
         """
-        if self.loop is None:
-            self._init_nested_repl()
-            self._start_asyncio_loop()
-        elif not self.loop.is_running():
-            self.writeline(grey("Restarting previously stopped asyncio loop"))
-            self._start_asyncio_loop()
-        else:
+        import threading
+
+        if self.loop is not None:
             if (
-                repl_future := self.locals.get("repl_future", None)
+                repl_future := self.locals.get("repl_future")
             ) and not repl_future.done():
                 repl_future.cancel()
-
             self.loop.call_soon_threadsafe(self._stop_asyncio_loop)
+        elif threading.current_thread() is not threading.main_thread():
+            # Starting a loop from inside the (now loop-less) nested REPL
+            # would stack a third thread on top and leave the main thread
+            # stuck waiting for this one.
+            self.writeline(
+                grey(
+                    "The asyncio loop is stopped. Exit this nested REPL "
+                    f"(Ctrl-D) before using {config.TOGGLE_ASYNCIO_LOOP_CMD} "
+                    "again."
+                )
+            )
+        else:
+            self._init_nested_repl()
+            self._start_asyncio_loop()
 
     def auto_indent_hook(self):
         """Hook called by readline between printing the prompt and
@@ -743,19 +852,26 @@ class ImprovedConsole(InteractiveConsole):
         return ""
 
     def _cmd_handler(self, line):
-        if matches := self.commands_re.match(line):
+        # - console commands and the doc suffix are only recognised at the
+        # start of a statement. Inside a block the text is plain python
+        # (eg: a docstring line ending with '?') and must go through as is.
+        at_statement_start = not self.buffer
+        if at_statement_start and (matches := self.commands_re.match(line)):
             command, args = matches.groups()
             line = self.commands[command](args)
-        elif line.endswith(config.DOC_CMD):
+        elif at_statement_start and line.endswith(config.DOC_CMD):
             if line.endswith(config.DOC_CMD * 2):
                 # search for line in online docs
                 # - strip off the '??' and the possible tab-completed
-                # '(' or '.' and replace inner '.' with '+' to create the
-                # search query string
-                line = line.rstrip(f"{config.DOC_CMD}.(").replace(".", "+")
+                # '(' or '.', turn inner '.' into spaces so each part is a
+                # search term, and URL-encode the result
                 import webbrowser
+                from urllib.parse import quote_plus
 
-                webbrowser.open(config.DOC_URL.format(sys=sys, term=line))
+                term = line.rstrip(f"{config.DOC_CMD}.(").replace(".", " ")
+                webbrowser.open(
+                    config.DOC_URL.format(sys=sys, term=quote_plus(term))
+                )
                 line = ""
             else:
                 line = line.rstrip(f"{config.DOC_CMD}.(")
@@ -779,7 +895,7 @@ class ImprovedConsole(InteractiveConsole):
                 # - empty line, decrease indent
                 self._indent = self._indent[: -len(config.ONE_INDENT)]
                 line = self._indent
-        elif line.startswith("%"):
+        elif at_statement_start and line.startswith("%"):
             self.writeline("Y U NO LIKE ME?")
             return line
         return line or ""
@@ -793,11 +909,11 @@ class ImprovedConsole(InteractiveConsole):
             empty_lines += 1 if not line else 3
         return self._cmd_handler(line)
 
-    def push(self, line):
+    def push(self, line, *args, **kwargs):
         """Wrapper around InteractiveConsole's push method for adding an
         indent on start of a block.
         """
-        if more := super().push(line):
+        if more := super().push(line, *args, **kwargs):
             if line.endswith((":", "[", "{", "(")):
                 self._indent += config.ONE_INDENT
         else:
@@ -845,14 +961,22 @@ class ImprovedConsole(InteractiveConsole):
             return future.result()
         except SystemExit:
             raise
+        except NameError as err:
+            # - same auto-import as the synchronous path. The innermost
+            # traceback frame is still the statement's own code object,
+            # whether it ran as a plain function or as a coroutine.
+            if config.ENABLE_AUTO_IMPORTS and self._auto_import(err, code):
+                return self.runcode(code)
+            self.showtraceback()
         except BaseException:
-            if self.locals["repl_future_interrupted"]:
+            if self.locals.get("repl_future_interrupted"):
                 self.write("\nKeyboardInterrupt\n")
             else:
                 self.showtraceback()
 
     def write(self, data):
         """Write out data to stderr"""
+        data = str(data)
         sys.stderr.write(data if data.startswith("\033[") else red(data))
 
     def writeline(self, data):
@@ -879,7 +1003,7 @@ class ImprovedConsole(InteractiveConsole):
             tempbuf.write("\n".join(lines))
         return tempbuf.name
 
-    def showtraceback(self, *args):
+    def showtraceback(self, *args, **kwargs):
         """Wrapper around super(..).showtraceback()
 
         We do this to detect whether any subsequent statements after a
@@ -887,15 +1011,19 @@ class ImprovedConsole(InteractiveConsole):
         executing multiple statements from an edited buffer.
         """
         self._skip_subsequent = True
-        return super().showtraceback(*args)
+        return super().showtraceback(*args, **kwargs)
+
+    def showsyntaxerror(self, *args, **kwargs):
+        """A syntax error must stop an edited buffer just like a traceback."""
+        self._skip_subsequent = True
+        return super().showsyntaxerror(*args, **kwargs)
 
     def _exec_from_file(
-        self,
-        open_fd,
-        quiet=False,
-        skip_history=False,
-        print_comments=config.POST_EDIT_PRINT_COMMENTS,
+        self, open_fd, quiet=False, skip_history=False, print_comments=None
     ):
+        if print_comments is None:
+            # - resolved at call time so a .venv_rc.py can change the config
+            print_comments = config.POST_EDIT_PRINT_COMMENTS
         self._skip_subsequent = False
         previous = ""
         for stmt in open_fd:
@@ -937,17 +1065,19 @@ class ImprovedConsole(InteractiveConsole):
         self.push("")
 
     def lookup(self, name: str, namespace=None):
-        """Look up a (dotted) name in *namespace* or the current locals.
+        """Look up a (dotted) name in *namespace*, or in the current locals
+        with a fallback to builtins (so `len` or `str.join` resolve too).
 
         Iterative rather than recursive so arbitrarily deep dotted names
         (e.g. a.b.c.d.e) don't risk hitting Python's recursion limit.
         """
+        import builtins
+
         parts = name.split(".")
-        obj = (
-            self.locals.get(parts[0])
-            if namespace is None
-            else getattr(namespace, parts[0], None)
-        )
+        if namespace is None:
+            obj = self.locals.get(parts[0], getattr(builtins, parts[0], None))
+        else:
+            obj = getattr(namespace, parts[0], None)
         for part in parts[1:]:
             if obj is None:
                 return None
@@ -969,7 +1099,7 @@ class ImprovedConsole(InteractiveConsole):
           you are returned to the prompt).
 
         - with a filename argument, the file is opened in the editor. On
-          close, you are returned bay to the interpreter.
+          close, you are returned back to the interpreter.
 
         - with an object name argument, an attempt is made to lookup the
           source file of the object and it is opened if found. Else the
@@ -980,9 +1110,10 @@ class ImprovedConsole(InteractiveConsole):
         import subprocess
 
         line_num_opt = ""
+        tempbuf = None
         if arg:
             try:
-                if obj := self.lookup(arg):
+                if (obj := self.lookup(arg)) is not None:
                     filename = inspect.getsourcefile(obj)
                     if filename is None:
                         return self.writeline(
@@ -997,9 +1128,18 @@ class ImprovedConsole(InteractiveConsole):
         else:
             # - make a list of all lines in history, commenting any non-blank lines.
             if not (history := self.session_history):
-                with open(config.HISTFILE) as hf:
-                    history = hf.readlines()
-            filename = self._mktemp_buffer(
+                # - brand new session: offer the saved history instead
+                try:
+                    with open(config.HISTFILE) as hf:
+                        history = [
+                            line
+                            for line in hf
+                            # libedit's history file starts with a marker
+                            if not line.startswith("_HiStOrY_V2_")
+                        ]
+                except OSError:
+                    history = []
+            filename = tempbuf = self._mktemp_buffer(
                 f"# {line}" if line.strip() else ""
                 for line in (line.strip("\n") for line in history)
             )
@@ -1012,26 +1152,34 @@ class ImprovedConsole(InteractiveConsole):
         if line_num_opt:
             editor_argv.append(line_num_opt)
         editor_argv.append(filename)
-        rc = subprocess.run(editor_argv).returncode
+        try:
+            try:
+                rc = subprocess.run(editor_argv, check=False).returncode
+            except OSError as e:
+                return self.writeline(f"Could not run {config.EDITOR}: {e}")
 
-        # - if arg was not provided (ie: we edited history), execute
-        # un-commented lines in the current namespace
-        if not arg:
-            if rc == 0:
-                # - if HISTFILE contents were edited (ie: EDIT_CMD in a
-                # brand new session), don't print commented out lines
-                print_comments = (
-                    False
-                    if history != self.session_history
-                    else config.POST_EDIT_PRINT_COMMENTS
+            # - if arg was not provided (ie: we edited history), execute
+            # un-commented lines in the current namespace
+            if tempbuf is None:
+                return None
+            if rc != 0:
+                return self.writeline(
+                    f"{config.EDITOR} exited with an error code. "
+                    "Skipping execution."
                 )
-                with open(filename) as edits:
-                    self._exec_from_file(edits, print_comments=print_comments)
-            else:
-                self.writeline(
-                    f"{config.EDITOR} exited with an error code. Skipping execution."
-                )
-            os.unlink(filename)
+            # - if HISTFILE contents were edited (ie: EDIT_CMD in a brand
+            # new session), don't print commented out lines
+            print_comments = (
+                config.POST_EDIT_PRINT_COMMENTS
+                if history is self.session_history
+                else False
+            )
+            with open(tempbuf) as edits:
+                self._exec_from_file(edits, print_comments=print_comments)
+        finally:
+            if tempbuf is not None:
+                os.unlink(tempbuf)
+        return None
 
     @_doc_to_usage
     def process_sh_cmd(self, cmd):
@@ -1042,45 +1190,34 @@ class ImprovedConsole(InteractiveConsole):
         - without arguments, the current interpreter will be suspended
           and you will be dropped in a {config.SHELL} prompt. Use fg to return.
 
-        - with arguments, the text will be executed in {config.SHELL} and the
-          output/error will be displayed. Additionally '_' will contain
-          a named tuple with the (<stdout>, <stderror>, <return_code>)
-          for the execution of the command.
+        - with arguments, the text is run by `{config.SHELL} -c`, so globs,
+          pipes and redirections work. Its stdout is displayed in green
+          (red if the command failed), its stderr in red, and '_' will
+          contain the CompletedProcess (.stdout, .stderr, .returncode).
 
-          You may pass strings from the global namespace to the command
-          line using the `.format()` syntax. for example:
+        - {config.SH_EXEC}{config.SH_EXEC} cmd runs the command interactively
+          on the terminal instead of capturing its output. Use it for
+          editors, pagers, `git log` and anything else that needs the tty.
+
+        - `cd [dir]` and `cd -` change the interpreter's working directory.
+
+          You may pass values from the namespace to the command line using
+          the `.format()` syntax. Only `{{name}}` and `{{dotted.name}}` that
+          resolve to something in the namespace are expanded; any other
+          braces (eg: awk '{{print $1}}' or find -exec rm {{}} \\;) reach
+          the shell untouched. For example:
 
         >>> filename = '/does/not/exist'
         >>> !ls {{filename}}
-        ls: cannot access /does/not/exist: No such file or directory
-        >>> _
-        CompletedProcess(arg=['ls'], returncode=0, stdout=b'', stderr=b'ls:
-        cannot access /does/not/exist: No such file or directory\n')
+        ls: /does/not/exist: No such file or directory
+        >>> _.returncode
+        1
         """
         import shlex
         import signal
         import subprocess
 
-        if cmd:
-            try:
-                cmd = cmd.format(**self.locals)
-                cmd = shlex.split(cmd)
-                if cmd[0] == "cd":
-                    os.chdir(
-                        os.path.expanduser(
-                            os.path.expandvars(" ".join(cmd[1:]) or "${HOME}")
-                        )
-                    )
-                else:
-                    completed = subprocess.run(
-                        cmd, capture_output=True, env=os.environ, text=True
-                    )
-                    out, rc = completed.stdout, completed.returncode
-                    print(red(out) if rc else green(out, bold=False))
-                    self.locals["_"] = completed
-            except Exception:
-                self.showtraceback()
-        else:
+        if not cmd:
             if os.getenv("SSH_CONNECTION"):
                 # I use the bash function similar to the one below in my
                 # .bashrc to directly open a python prompt on remote
@@ -1089,8 +1226,79 @@ class ImprovedConsole(InteractiveConsole):
                 # Unfortunately, suspending this ssh session, does not place me
                 # in a shell, so I need to create one:
                 os.system(config.SHELL)
+            elif not sys.stdin.isatty():
+                # - no job control to `fg` us from: SIGSTOP would freeze the
+                # process for good
+                self.writeline("Not attached to a terminal, cannot suspend.")
             else:
                 os.kill(os.getpgrp(), signal.SIGSTOP)
+            return
+
+        interactive = cmd.startswith(config.SH_EXEC)
+        if interactive:
+            cmd = cmd[len(config.SH_EXEC) :].strip()
+        try:
+            cmd = self._expand_shell_fields(cmd)
+            try:
+                argv = shlex.split(cmd)
+            except ValueError:
+                argv = []  # - unbalanced quotes: let the shell report it
+            if argv and argv[0] == "cd":
+                self._chdir(" ".join(argv[1:]))
+            elif interactive:
+                self.locals["_"] = subprocess.run(
+                    [config.SHELL, "-c", cmd], check=False
+                )
+            else:
+                completed = subprocess.run(
+                    [config.SHELL, "-c", cmd],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if out := completed.stdout:
+                    if not out.endswith("\n"):
+                        out += "\n"
+                    sys.stdout.write(
+                        red(out)
+                        if completed.returncode
+                        else green(out, bold=False)
+                    )
+                if err := completed.stderr:
+                    if not err.endswith("\n"):
+                        err += "\n"
+                    sys.stderr.write(red(err))
+                self.locals["_"] = completed
+        except Exception:
+            self.showtraceback()
+
+    def _expand_shell_fields(self, cmd):
+        """Expand {name} / {dotted.name} from the namespace, leave the rest."""
+
+        def expand(match):
+            field = match.group(1)
+            # - only names bound in the namespace, not builtins: the braces
+            # in awk '{print}' must stay exactly as typed
+            if field.partition(".")[0] not in self.locals:
+                return match.group(0)
+            value = self.lookup(field)
+            return match.group(0) if value is None else str(value)
+
+        return _RE_SHELL_FIELD.sub(expand, cmd)
+
+    def _chdir(self, target):
+        """`cd` for the shell command, including `cd -` like a real shell."""
+        if target == "-":
+            target = os.environ.get("OLDPWD")
+            if not target:
+                return self.writeline("cd: OLDPWD not set")
+            print(target)
+        target = os.path.expanduser(os.path.expandvars(target or "~"))
+        previous = os.getcwd()
+        os.chdir(target)
+        os.environ["OLDPWD"] = previous
+        os.environ["PWD"] = os.getcwd()
+        return None
 
     @_doc_to_usage
     def process_list_cmd(self, arg):
@@ -1102,9 +1310,18 @@ class ImprovedConsole(InteractiveConsole):
                 "source list command requires an "
                 f"argument (eg: {config.LIST_CMD} foo)"
             )
+        obj = self.lookup(arg)
+        if obj is None:
+            return self.writeline(f"{arg}: no such name in the namespace")
         try:
-            src_lines, offset = inspect.getsourcelines(self.lookup(arg))
-        except (OSError, TypeError, NameError) as e:
+            src_lines, offset = inspect.getsourcelines(obj)
+        except TypeError:
+            # - builtins and other C-level objects have no python source
+            self.writeline(
+                f"{arg}: no python source available "
+                f"({type(obj).__name__} object)"
+            )
+        except OSError as e:
             self.writeline(e)
         else:
             for line_no, line in enumerate(src_lines, offset + 1):
@@ -1120,27 +1337,40 @@ class ImprovedConsole(InteractiveConsole):
         - with a python keyword or any object, print its help/docstring.
         - with one of the console commands, print that command's usage.
         """
-        if arg:
-            if keyword.iskeyword(arg):
-                self.push(f'help("{arg}")')
-            elif arg in self.commands:
-                self.commands[arg]("-h")
-            else:
-                self.push(f"help({arg})")
-        else:
+        if not arg:
             print(cyan(self.__doc__).format(**config.__dict__))
+            return None
+        if arg in self.commands:
+            return self.commands[arg]("-h")
+        # - the returned line is executed by the console like typed input
+        if keyword.iskeyword(arg):
+            return f'help("{arg}")'
+        return f"help({arg})"
+
+    def exec_venv_rc(self):
+        """Execute the venv rc file from the current directory, once.
+
+        Returns the status line for the banner. Guarded so that a nested
+        REPL (see toggle_asyncio) neither re-runs the file nor wipes the
+        session history a second time.
+        """
+        if self._venv_rc_status is None:
+            try:
+                with open(config.VENV_RC) as venv_rc:
+                    self._exec_from_file(
+                        venv_rc, quiet=True, skip_history=True
+                    )
+            except OSError:
+                self._venv_rc_status = cyan("(no venv rc found)")
+            else:
+                # - clear out session_history for venv_rc commands
+                self.session_history = []
+                self._venv_rc_status = green("Successfully executed venv rc !")
+        return self._venv_rc_status
 
     def interact(self, banner=None, exitmsg=None):
         """A forgiving wrapper around InteractiveConsole.interact()"""
-        venv_rc_done = cyan("(no venv rc found)")
-        try:
-            with open(config.VENV_RC) as venv_rc:
-                self._exec_from_file(venv_rc, quiet=True, skip_history=True)
-            # - clear out session_history for venv_rc commands
-            self.session_history = []
-            venv_rc_done = green("Successfully executed venv rc !")
-        except OSError:
-            pass
+        venv_rc_done = self.exec_venv_rc()
 
         if banner is None:
             banner = (
@@ -1177,6 +1407,9 @@ class ImprovedConsole(InteractiveConsole):
                         "If the crash occurs again, please exit the session"
                     )
                 )
+                # - drop the statement that took us down, or it would be
+                # glued to the next line typed into the restored session
+                self.resetbuffer()
                 banner = blue("Your crashed session has been restored")
             else:
                 # exit with a Ctrl-D
