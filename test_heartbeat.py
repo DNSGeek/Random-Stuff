@@ -49,13 +49,13 @@ def _wait_for(predicate, timeout=15.0, interval=0.1):
 def _make_pair(port_a, port_b, **kwargs):
     """Two heartbeats wired to each other on 127.0.0.1 with different ports.
     Tight intervals so tests don't take forever."""
-    defaults = dict(
-        health_check=lambda: True,
-        heartbeat_interval=0.2,
-        heartbeat_timeout=1.0,
-        local_check_interval=10.0,
-        failover_grace=1.5,
-    )
+    defaults = {
+        "health_check": lambda: True,
+        "heartbeat_interval": 0.2,
+        "heartbeat_timeout": 1.0,
+        "local_check_interval": 10.0,
+        "failover_grace": 1.5,
+    }
     defaults.update(kwargs)
 
     a = Heartbeat("127.0.0.1", "127.0.0.1", port=port_a, peer_port=port_b, **defaults)
@@ -268,7 +268,7 @@ def test_invalid_peer_byte_drops_connection():
             try:
                 trailing = conn.recv(64)
                 received.append(("trailing", trailing))
-            except _sock.timeout:
+            except TimeoutError:
                 received.append("timeout")
             conn.close()
         finally:
@@ -524,7 +524,7 @@ def test_no_split_brain_under_simultaneous_start():
         b.start()
         try:
             ok = _wait_for(
-                lambda: {a.get_state(), b.get_state()} == {"P", "S"},
+                lambda a=a, b=b: {a.get_state(), b.get_state()} == {"P", "S"},
                 timeout=8,
             )
             if not ok:

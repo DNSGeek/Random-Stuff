@@ -10,7 +10,6 @@ import sqlite3
 import threading
 import time
 from sys import argv, exit
-from typing import Optional
 
 tlock = threading.Lock()
 tqueue: queue.Queue[str] = queue.Queue()
@@ -23,12 +22,12 @@ FStat = list[int]
 # Type alias for the 6-element DB row: (hash, atime, mtime, ctime, size, whent)
 # whent is time.struct_time on success or float (time.time()) on parse failure
 DBRow = tuple[
-    Optional[str],
-    Optional[int],
-    Optional[int],
-    Optional[int],
-    Optional[int],
-    Optional[time.struct_time | float],
+    str | None,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    time.struct_time | float | None,
 ]
 
 # Type alias for a pending batch insert row: (path, hash, atime, mtime, ctime, size)
@@ -129,7 +128,7 @@ def getDB(cur: sqlite3.Cursor, path: str) -> DBRow:
                 "SELECT hash, atime, mtime, ctime, size, whent FROM media WHERE path=? ORDER BY whent DESC LIMIT 1;",
                 (path,),
             )
-            results: Optional[tuple] = cur.fetchone()
+            results: tuple | None = cur.fetchone()
         except Exception as ex:
             logger("Unable to get data from media DB: %s" % str(ex))
             return (None, None, None, None, None, None)
@@ -195,7 +194,7 @@ def hashThreads(cur: sqlite3.Cursor, paths: list[str]) -> None:
         if fstat[1] == 0:
             continue
 
-        dbhash, atime, mtime, ctime, size, whent = getDB(cur, fullpath)
+        dbhash, _atime, mtime, ctime, size, _whent = getDB(cur, fullpath)
 
         if dbhash is None:
             fhash: str = computeHash(fullpath)

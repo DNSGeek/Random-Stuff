@@ -12,13 +12,13 @@ from os.path import exists
 from queue import Queue
 from string import ascii_letters
 from sys import exit as sysexit
-from typing import Any, Dict, List
+from typing import Any
 
 import requests
 from matplotlib import pyplot as plt
 
 # THe list of hosts to pull stats from
-hostList: List[str] = []
+hostList: list[str] = []
 # The base file path to write data
 base: str = "/var/tmp/web_stats"
 webbase: str = "/var/www/html/stats/"
@@ -27,17 +27,17 @@ webbase: str = "/var/www/html/stats/"
 # Save the collected data between invocations
 def handler(signum, frame):
     logging.info("Signal received. Writing data and exiting.")
-    for host in host_stats:
+    for host, hstats in host_stats.items():
         logging.info(f"Writing stats for {host}")
         with open(f"{base}/{host}.pickle", "wb") as f:
-            f.write(host_stats[host].dumps())
+            f.write(hstats.dumps())
     sysexit(0)
 
 
 # A class to make it wasy to save stats
 class stats:
     def __init__(self, hostname: str) -> None:
-        self.data: Dict = {}
+        self.data: dict = {}
         self.hostname: str = hostname
 
     def addType(self, valType: str) -> None:
@@ -57,15 +57,15 @@ class stats:
         now = int(time.time())
         self.data[valType][now] = value
 
-    def retVals(self, valType: str) -> List:
-        retList: List = []
+    def retVals(self, valType: str) -> list:
+        retList: list = []
         if valType not in self.data:
             return []
         for datum in self.data[valType]:
             retList.append([self.data[valType][datum], datum])
-        return list(sorted(retList, key=lambda x: x[1]))
+        return sorted(retList, key=lambda x: x[1])
 
-    def retTypes(self) -> List[str]:
+    def retTypes(self) -> list[str]:
         return list(self.data.keys())
 
     def dumps(self) -> bytes:
@@ -107,7 +107,7 @@ def pull_stats(
 
 
 # Take the pulled data save it and process it
-def process_data(data: Dict) -> None:
+def process_data(data: dict) -> None:
     hostname = data["hostname"]
     logging.debug(f"Processing data for {hostname}")
     myStats: stats = host_stats[hostname]
@@ -125,12 +125,12 @@ def generate_graphs(hostname: str) -> None:
     filepath: str = f"{webbase}{hostname}_"
     for name in myStats.retTypes():
         sstats = myStats.retVals(name)
-        x: List[datetime] = []
+        x: list[datetime] = []
         match name:
             case "cpu":
-                usercpu: List = []
-                syscpu: List = []
-                idlecpu: List = []
+                usercpu: list = []
+                syscpu: list = []
+                idlecpu: list = []
                 x = []
                 for vals in sstats:
                     x.append(datetime.fromtimestamp(vals[1]))
@@ -152,9 +152,9 @@ def generate_graphs(hostname: str) -> None:
                 plt.savefig(f"{filepath}cpu.png", format="png")
                 plt.close()
             case "process_counts":
-                total: List[int] = []
-                running: List[int] = []
-                sleeping: List[int] = []
+                total: list[int] = []
+                running: list[int] = []
+                sleeping: list[int] = []
                 x = []
                 for vals in sstats:
                     x.append(datetime.fromtimestamp(vals[1]))
@@ -171,9 +171,9 @@ def generate_graphs(hostname: str) -> None:
                 plt.savefig(f"{filepath}processes.png", format="png")
                 plt.close()
             case "load_avg":
-                one: List[float] = []
-                five: List[float] = []
-                fifteen: List[float] = []
+                one: list[float] = []
+                five: list[float] = []
+                fifteen: list[float] = []
                 x = []
                 for vals in sstats:
                     x.append(datetime.fromtimestamp(vals[1]))
@@ -191,7 +191,7 @@ def generate_graphs(hostname: str) -> None:
                 plt.close()
             case "memory":
                 x = []
-                used: List[float] = []
+                used: list[float] = []
                 for vals in sstats:
                     x.append(datetime.fromtimestamp(vals[1]))
                     val = vals[0]["used"]
@@ -212,9 +212,9 @@ def generate_graphs(hostname: str) -> None:
             case "vm":
                 x = []
                 if "vsize" in sstats[0][0]:  # Is this a Mac?
-                    vsize: List[int] = []
-                    swapin: List[int] = []
-                    swapout: List[int] = []
+                    vsize: list[int] = []
+                    swapin: list[int] = []
+                    swapout: list[int] = []
                     for vals in sstats:
                         x.append(datetime.fromtimestamp(vals[1]))
                         swapin.append(int(vals[0]["swapin"]))
@@ -230,10 +230,10 @@ def generate_graphs(hostname: str) -> None:
                     plt.plot(x, swapin, "o-", label="Swapins")
                     plt.plot(x, swapout, "o-", label="Swapouts")
                 else:
-                    vtotal: List[float] = []
-                    vfree: List[float] = []
-                    vused: List[float] = []
-                    avail: List[float] = []
+                    vtotal: list[float] = []
+                    vfree: list[float] = []
+                    vused: list[float] = []
+                    avail: list[float] = []
                     for vals in sstats:
                         x.append(datetime.fromtimestamp(vals[1]))
                         vtotal.append(vals[0]["total"])
@@ -268,7 +268,7 @@ def process_queue(dataQueue: Queue, qlock: threading.Lock) -> None:
             no_data = dataQueue.empty()
             qlock.release()
         qlock.acquire()
-        data: Dict = dataQueue.get()
+        data: dict = dataQueue.get()
         qlock.release()
         process_data(data)
 
@@ -284,8 +284,8 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, handler)
     signal.signal(signal.SIGTERM, handler)
     # Start the background threads to pull the data
-    host_stats: Dict[str, stats] = {}
-    workerList: List[threading.Thread] = []
+    host_stats: dict[str, stats] = {}
+    workerList: list[threading.Thread] = []
     dataQueue: Queue = Queue(maxsize=0)
     qlock: threading.Lock = threading.Lock()
     s: requests.Session = requests.Session()

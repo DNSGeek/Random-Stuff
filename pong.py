@@ -48,9 +48,7 @@ class Player:
         ybottom: int = int(self.ybottom)
         if ypos <= int(bally) <= ybottom:
             return True
-        if ypos <= ballybot <= ybottom:
-            return True
-        return False
+        return ypos <= ballybot <= ybottom
 
     @micropython.native
     def move(self, lr: bool, bally: int) -> None:
@@ -178,12 +176,10 @@ def displayBall(bx: int, by: int, color: int) -> None:
 
 @micropython.native
 def detectCollision(bx: int, by: int, p1c: Player, p2c: Player, lr: bool) -> bool:
-    if bx == 20:
-        if p1c.collision(by):
-            lr = not lr
-    if bx == 280:
-        if p2c.collision(by):
-            lr = not lr
+    if bx == 20 and p1c.collision(by):
+        lr = not lr
+    if bx == 280 and p2c.collision(by):
+        lr = not lr
     return lr
 
 

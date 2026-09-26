@@ -4,10 +4,9 @@ import logging
 import subprocess
 import sys
 from platform import node
-from typing import Dict, List
 
 
-def get_top() -> List[str]:
+def get_top() -> list[str]:
     try:
         top = subprocess.Popen(
             ["/usr/bin/top", "-b", "-n", "1", "-w", "240"],
@@ -16,7 +15,7 @@ def get_top() -> List[str]:
             stderr=subprocess.PIPE,
         )
         lines = top.stdout.readlines()
-        retList: List[str] = []
+        retList: list[str] = []
         for line in lines:
             retList.append(line.decode("utf-8").strip())
         return retList
@@ -25,8 +24,8 @@ def get_top() -> List[str]:
         sys.exit(1)
 
 
-def parse_top(top: List[str]) -> Dict:
-    retDict: Dict = {"hostname": node()}
+def parse_top(top: list[str]) -> dict:
+    retDict: dict = {"hostname": node()}
     for line in top:
         if not line:
             continue  # skip blank lines
@@ -95,7 +94,7 @@ def parse_top(top: List[str]) -> Dict:
                 "available": avail,
             }
         elif fields[0] == "PID":
-            out_fields: Dict[str, int] = {}
+            out_fields: dict[str, int] = {}
             for lnum, name in enumerate(fields):
                 out_fields[name] = lnum
         else:

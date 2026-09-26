@@ -10,7 +10,7 @@ import json
 import os
 import re
 import stat
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from sys import stderr
 from typing import Any
 
@@ -489,7 +489,7 @@ def main() -> int:
 
     if repos:
         data: dict[str, Any] = {
-            "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ"),
+            "generated": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ"),
             "model": options["model"],
             "source_directory": os.path.abspath(basedir),
             "repos": repos,

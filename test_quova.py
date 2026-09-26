@@ -11,7 +11,7 @@ import sys
 import threading
 import types
 import unittest
-from typing import Any
+from typing import Any, Self
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ _daemon_mod = types.ModuleType("daemon")
 
 
 class _DaemonContextStub:
-    def __enter__(self) -> _DaemonContextStub:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -48,7 +48,7 @@ class _DaemonContextStub:
 _daemon_mod.DaemonContext = _DaemonContextStub  # type: ignore[attr-defined]
 sys.modules.setdefault("daemon", _daemon_mod)
 
-import quova  # noqa: E402  (must come after stubs)
+import quova
 
 # ---------------------------------------------------------------------------
 # Test fixtures
@@ -144,7 +144,7 @@ class TestEncodeQuova(unittest.TestCase):
     def test_unicode_city_name(self) -> None:
         info: quova.GeoIPRecord = {**SAMPLE_IPINFO, "city": "Düsseldorf"}
         result: bytes = quova.encode_quova(info, "1.2.3.4")
-        self.assertIn("düsseldorf".encode("utf-8"), result)
+        self.assertIn("düsseldorf".encode(), result)
 
     def test_counter_increments_per_call(self) -> None:
         for _ in range(5):

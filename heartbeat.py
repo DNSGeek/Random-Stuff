@@ -72,12 +72,12 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 log = logging.getLogger("heartbeat")
 
 
-def _close_socket(sock: Optional[socket.socket]) -> None:
+def _close_socket(sock: socket.socket | None) -> None:
     """Best-effort shutdown and close. Safe with None."""
     if sock is None:
         return
@@ -110,12 +110,12 @@ class Heartbeat:
         my_ip: str,
         peer_ip: str,
         port: int = 53281,
-        peer_port: Optional[int] = None,
+        peer_port: int | None = None,
         *,
         managed_process: str = "my_server.py",
-        health_check: Optional[Callable[[], bool]] = None,
+        health_check: Callable[[], bool] | None = None,
         health_check_cache_seconds: float = 1.0,
-        on_state_change: Optional[Callable[[str, str], None]] = None,
+        on_state_change: Callable[[str, str], None] | None = None,
         heartbeat_interval: float = 1.0,
         heartbeat_timeout: float = 5.0,
         local_check_interval: float = 10.0,
@@ -161,7 +161,7 @@ class Heartbeat:
         # Cached health-check result. Forking ps on every heartbeat (which
         # can fire from multiple threads at once during a reconcile) adds
         # up; cache for `health_check_cache_seconds` to amortize.
-        self._health_cache_value: Optional[bool] = None
+        self._health_cache_value: bool | None = None
         self._health_cache_time: float = 0.0
         self._health_cache_lock = threading.Lock()
 
@@ -171,20 +171,20 @@ class Heartbeat:
         self._peer_announced_departure = threading.Event()
 
         # Listener (server) side.
-        self._ssock: Optional[socket.socket] = None
-        self._listen_thread: Optional[threading.Thread] = None
-        self._reaper_thread: Optional[threading.Thread] = None
+        self._ssock: socket.socket | None = None
+        self._listen_thread: threading.Thread | None = None
+        self._reaper_thread: threading.Thread | None = None
         self._workers: list[socket.socket] = []
         self._workers_lock = threading.Lock()
         self._worker_threads: list[threading.Thread] = []
         self._worker_threads_lock = threading.Lock()
 
         # Outbound (client) side — our connection to the peer.
-        self._csock: Optional[socket.socket] = None
+        self._csock: socket.socket | None = None
         self._csock_lock = threading.Lock()
-        self._heartbeat_thread: Optional[threading.Thread] = None
-        self._last_successful_contact: Optional[float] = None
-        self._loop_start_time: Optional[float] = None
+        self._heartbeat_thread: threading.Thread | None = None
+        self._last_successful_contact: float | None = None
+        self._loop_start_time: float | None = None
 
     # ------------------------------------------------------------------ #
     # State accessors                                                    #
@@ -233,6 +233,7 @@ class Heartbeat:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 timeout=5.0,
+                check=False,
             )
             return bool(result.stdout.strip())
         except Exception as ex:
@@ -290,7 +291,7 @@ class Heartbeat:
             while not self._shutdown.is_set():
                 try:
                     cmd = client_sock.recv(1)
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 except OSError as ex:
                     log.debug("Peer connection error: %s", ex)
@@ -335,7 +336,7 @@ class Heartbeat:
         while not self._shutdown.is_set():
             try:
                 client_sock, _addr = self._ssock.accept()
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except OSError:
                 if self._shutdown.is_set():
@@ -376,9 +377,9 @@ class Heartbeat:
     # Heartbeat sender (client side)                                     #
     # ------------------------------------------------------------------ #
 
-    def _connect_locked(self) -> Optional[socket.socket]:
+    def _connect_locked(self) -> socket.socket | None:
         """Open a fresh client socket to the peer. Caller holds _csock_lock."""
-        sock: Optional[socket.socket] = None
+        sock: socket.socket | None = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(self._heartbeat_timeout)
@@ -612,7 +613,7 @@ class Heartbeat:
             try:
                 sock.sendall(self.PROTO_QUERY_STATE)
                 reply = sock.recv(1)
-            except socket.timeout:
+            except TimeoutError:
                 log.info(
                     "No heartbeat reply within %.1fs",
                     self._heartbeat_timeout,
@@ -669,7 +670,7 @@ class Heartbeat:
         if self._ssock is not None:
             raise RuntimeError("heartbeat already started")
 
-        ssock: Optional[socket.socket] = None
+        ssock: socket.socket | None = None
         try:
             ssock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             ssock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -699,7 +700,7 @@ class Heartbeat:
         """Open a short-lived socket and send ``PROTO_GOODBYE``. Best
         effort — failure is logged at debug level and otherwise ignored
         (peer will fail over via the grace period instead)."""
-        sock: Optional[socket.socket] = None
+        sock: socket.socket | None = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(2.0)
@@ -757,7 +758,7 @@ class Heartbeat:
 
     def install_signal_handlers(
         self,
-        signals: Optional[tuple[int, ...]] = None,
+        signals: tuple[int, ...] | None = None,
         install_dump: bool = True,
     ) -> None:
         """Install handlers that call ``stop()`` on the given signals.
@@ -831,7 +832,7 @@ class Heartbeat:
         ]
         return "\n".join(lines)
 
-    def wait_for_shutdown(self, timeout: Optional[float] = None) -> bool:
+    def wait_for_shutdown(self, timeout: float | None = None) -> bool:
         return self._shutdown.wait(timeout=timeout)
 
 
@@ -840,7 +841,7 @@ class Heartbeat:
 # --------------------------------------------------------------------------- #
 
 
-def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="heartbeat")
     parser.add_argument(
         "-m",
@@ -875,7 +876,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     logging.basicConfig(
         format="%(asctime)s %(levelname)s\t%(message)s",
