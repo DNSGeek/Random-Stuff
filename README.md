@@ -98,7 +98,7 @@ at `http://127.0.0.1:1234`) — no data leaves your machine.
 
 | Script                                         | What it does                                                                                                                                          |
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`summarize_git.py`](summarize_git.py)         | Uses a local LLM to generate a concise summary of a Git repository.                                                                                   |
+| [`summarize_git.py`](summarize_git.py)         | Summarizes every repo under a directory with a local LLM (LM Studio) into a self-contained browsable script; unchanged repos are cached between runs. |
 | [`summarize_readmes.py`](summarize_readmes.py) | Walks subdirectories, feeds their READMEs to a local LLM, and produces a combined summary — sizing input to the model's context window automatically. |
 
 ---
