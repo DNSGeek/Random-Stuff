@@ -11,6 +11,7 @@
 import logging
 import os
 import signal
+import socket
 import sys
 import threading
 from time import monotonic, sleep
@@ -22,12 +23,30 @@ logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(mes
 
 
 class _PortBox:
-    def __init__(self, start=53400):
-        self.next = start
+    """Hand out pairs of free TCP ports chosen by the OS.
+
+    Fixed port numbers inside the ephemeral range collide with whatever
+    outgoing connection a busy CI runner happens to hold, so each port is
+    reserved by binding a throwaway socket to ("127.0.0.1", 0) and reading
+    back the kernel's pick. Pairs come back sorted (lower, higher) because
+    the protocol and the tests rely on lower-port-wins, and a port is never
+    handed out twice in one process."""
+
+    def __init__(self):
+        self._used = set()
+
+    def _free_port(self):
+        while True:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("127.0.0.1", 0))
+                port = sock.getsockname()[1]
+            if port not in self._used:
+                self._used.add(port)
+                return port
 
     def pair(self):
-        a, b = self.next, self.next + 1
-        self.next += 2
+        a, b = sorted((self._free_port(), self._free_port()))
         return a, b
 
 
