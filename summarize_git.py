@@ -2,9 +2,12 @@
 """Summarize the git repositories under a directory using a local LLM.
 
 Every immediate subdirectory with a README is summarized from that README
-plus its key build, dependency, CI and deployment files. The output file is a
-self-contained Python script: a small viewer at the top, the summaries
-embedded below it as JSON. Run the output file to browse them.
+plus its key build, dependency, CI and deployment files. With --recursive the
+whole tree is walked instead: git repositories, submodules, worktrees, bare
+repositories and directories with a README (or, with --build-dirs, a build
+file) become units that know their parent and child components. The output
+file is a self-contained Python script: a small viewer at the top, the
+summaries embedded below it as JSON. Run the output file to browse them.
 
 The previous output file doubles as the cache: a repo whose input files have
 not changed since the last run keeps its summary instead of being sent to the
@@ -19,6 +22,7 @@ import re
 import stat
 import subprocess
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from sys import stderr
 from typing import Any
@@ -72,6 +76,10 @@ DEFAULTS: dict[str, Any] = {
     "context_chars": CONTEXT_CHARS,
     "retries": RETRIES,
     "quiet": False,
+    "recursive": False,
+    "build_dirs": False,
+    "exclude": [],
+    "include": [],
 }
 
 # README, README.md, Readme.rst, read_me.txt and friends, .md preferred
@@ -115,6 +123,55 @@ SKIP_DIRS: frozenset[str] = frozenset(
         "cmake-build-release",
     }
 )
+
+# Files that make a README-less directory a unit when --build-dirs is given
+BUILD_MARKERS: frozenset[str] = frozenset(
+    {
+        "Dockerfile",
+        "Containerfile",
+        "Makefile",
+        "makefile",
+        "GNUmakefile",
+        "CMakeLists.txt",
+        "meson.build",
+        "Chart.yaml",
+        "package.json",
+        "pyproject.toml",
+        "setup.py",
+        "go.mod",
+        "Cargo.toml",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "Package.swift",
+        "Gemfile",
+        "composer.json",
+        "flake.nix",
+        "BUILD.bazel",
+        "MODULE.bazel",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "compose.yml",
+        "compose.yaml",
+        "Justfile",
+        "justfile",
+    }
+)
+
+# How each kind of unit found by --recursive is described to the model
+KIND_LABELS: dict[str, str] = {
+    "repo": "git repository",
+    "submodule": "git submodule",
+    "worktree": "git worktree",
+    "bare": "bare git repository",
+    "directory": "directory",
+}
+
+# Entry fields that place a unit in the tree; written by --recursive only
+TREE_KEYS: tuple[str, ...] = ("kind", "depth", "parent", "children")
+
+# Characters of a child's README shown in its parent's prompt
+EXCERPT_CHARS: int = 300
 
 # Hidden entries that are still worth showing in the directory listing
 VISIBLE_HIDDEN: frozenset[str] = frozenset({".github", ".gitmodules", ".gitlab-ci.yml"})
@@ -217,8 +274,10 @@ SYSTEM_PROMPT: str = (
 )
 
 # Filled with str.format(name=..., context=...). The context may contain
-# braces; format leaves substituted values alone, so that is safe.
-USER_PROMPT: str = (
+# braces; format leaves substituted values alone, so that is safe. The prompt
+# is kept in two halves so --recursive can slot STRUCTURE_PROMPT between them
+# without changing the flat-mode prompt, and so flat-mode cache keys.
+USER_PROMPT_HEAD: str = (
     "Write a detailed summary of the project named below, based on the "
     "project files that follow.\n"
     "Cover these points, in this order, as flowing prose:\n"
@@ -233,14 +292,30 @@ USER_PROMPT: str = (
     "commands, flags, versions, or dependencies. Use plain text only: no "
     "markdown, no headings, no bullet lists, no code fences. Do not include "
     "any preamble or closing remarks.\n\n"
+)
+USER_PROMPT_TAIL: str = (
     "Project name: {name}\n\n"
     "Project files follow. Each starts with a line of the form "
     "'----- FILE: name -----'.\n"
     "{context}"
 )
+USER_PROMPT: str = USER_PROMPT_HEAD + USER_PROMPT_TAIL
+
+# Goes between the two halves for a unit that has a parent or children.
+# Filled with str.format(structure=...).
+STRUCTURE_PROMPT: str = (
+    "This project is one component in a larger tree of projects. Use the "
+    "notes below to say where it fits: mention its parent and its "
+    "sub-components briefly where relevant, but do not summarize the "
+    "sub-components themselves, as each is summarized separately.\n\n"
+    "{structure}\n\n"
+)
 
 # Some reasoning models emit a visible thinking block. Strip it if present.
 THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+
+# A line that underlines a heading in reStructuredText or Markdown
+HEADING_RULE_RE = re.compile(r"^[=\-~^*#]{3,}$")
 
 # Finds the embedded JSON in an earlier output file, which serves as the cache
 DATA_RE = re.compile(r'^_DATA = r"""\n(.*?)\n"""', re.MULTILINE | re.DOTALL)
@@ -296,10 +371,29 @@ def wrap(text, width=None):
     return "\\n".join(out)
 
 
-def details(entry):
+def child_label(parent, name):
+    """A name relative to its parent: 'a/b/c' under 'a/b' is shown as 'c'."""
+    if parent and name.startswith(parent + "/"):
+        return name[len(parent) + 1:]
+    return name
+
+
+def tree_order(repos):
+    """Names in tree order: each unit directly before the units inside it."""
+    return sorted(repos, key=lambda name: name.split("/"))
+
+
+def details(name, entry):
     """Metadata lines shown under a repo's name."""
     git = entry.get("git") or {}
     lines = []
+    if entry.get("kind"):
+        lines.append("Kind: %s" % entry["kind"])
+    if entry.get("parent"):
+        lines.append("Parent: %s" % entry["parent"])
+    if entry.get("children"):
+        kids = [child_label(name, child) for child in entry["children"]]
+        lines.append("Contains: %s" % ", ".join(kids))
     if git.get("remote"):
         lines.append("Remote: %s" % git["remote"])
     if git.get("commit"):
@@ -325,7 +419,7 @@ def show(name, entry):
     print("=" * width)
     print(name)
     print("=" * width)
-    for line in details(entry):
+    for line in details(name, entry):
         print(line)
     print()
     print(wrap(entry.get("summary", "(no summary)")))
@@ -347,7 +441,7 @@ def write_text(path, names, repos, meta):
     for name in names:
         entry = repos[name]
         lines.extend([rule, name, rule])
-        lines.extend(details(entry))
+        lines.extend(details(name, entry))
         lines.append("")
         lines.append(wrap(entry.get("summary", "(no summary)"), TEXT_WIDTH))
         for note in notes(entry):
@@ -363,7 +457,7 @@ def write_text(path, names, repos, meta):
     return 0
 
 
-def print_menu(names, meta):
+def print_menu(names, repos, meta):
     width = term_width()
     print()
     print("=" * width)
@@ -372,13 +466,18 @@ def print_menu(names, meta):
     print("=" * width)
     pad = len(str(len(names)))
     for index, name in enumerate(names, start=1):
-        print("%*d. %s" % (pad, index, name))
+        entry = repos[name]
+        # Nested units are indented under their parent and shown relative to
+        # it, unless the parent has no entry of its own to sit under.
+        parent = entry.get("parent")
+        label = child_label(parent if parent in repos else None, name)
+        print("%*d. %s%s" % (pad, index, "  " * entry.get("depth", 0), label))
     print()
 
 
 def menu(names, repos, meta):
     while True:
-        print_menu(names, meta)
+        print_menu(names, repos, meta)
         try:
             choice = input("Choose a repo by number or name (q to quit): ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -416,13 +515,17 @@ def resolve(choice, names):
     matches = [name for name in names if name.lower().startswith(lowered)]
     if len(matches) == 1:
         return matches[0]
+    # A nested unit can be picked by its last path component alone
+    matches = [name for name in names if name.lower().rsplit("/", 1)[-1] == lowered]
+    if len(matches) == 1:
+        return matches[0]
     return None
 
 
 def main(argv):
     data = load_data()
     repos = data.get("repos", {})
-    names = sorted(repos)
+    names = tree_order(repos)
     meta = {
         "generated": data.get("generated", "?"),
         "model": data.get("model", "?"),
@@ -476,12 +579,14 @@ def utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
-def get_dirs(base_dir: str = ".") -> list[str]:
+def get_dirs(base_dir: str = ".", exclude: frozenset[str] = frozenset()) -> list[str]:
     """Return a sorted list of non-hidden subdirectory names in base_dir."""
     dirs: list[str] = []
     with os.scandir(base_dir) as it:
         for entry in it:
-            if not entry.name.startswith(".") and entry.is_dir():
+            if entry.name.startswith(".") or entry.name in exclude:
+                continue
+            if entry.is_dir():
                 dirs.append(entry.name)
     return sorted(dirs)
 
@@ -525,7 +630,9 @@ def context_limit(fname: str) -> int | None:
     return lim
 
 
-def dir_listing(path: str, max_lines: int = 80) -> str:
+def dir_listing(
+    path: str, max_lines: int = 80, skip_dirs: frozenset[str] = SKIP_DIRS
+) -> str:
     """Two-level listing of path, skipping hidden and build-output directories."""
     try:
         with os.scandir(path) as it:
@@ -537,7 +644,7 @@ def dir_listing(path: str, max_lines: int = 80) -> str:
         if entry.name.startswith(".") and entry.name not in VISIBLE_HIDDEN:
             continue
         if entry.is_dir():
-            if entry.name in SKIP_DIRS:
+            if entry.name in skip_dirs:
                 continue
             lines.append(entry.name + "/")
             try:
@@ -560,20 +667,33 @@ def dir_listing(path: str, max_lines: int = 80) -> str:
     return "\n".join(lines)
 
 
-def nested_readmes(root: str, max_depth: int = 2) -> list[str]:
-    """Return paths of READMEs in subdirectories of root, skipping nested repos."""
+def nested_readmes(
+    root: str,
+    max_depth: int = 2,
+    skip_dirs: frozenset[str] = SKIP_DIRS,
+    stop_at: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Return paths of READMEs in subdirectories of root, skipping nested repos.
+
+    Directories in stop_at (the other units found by --recursive) have
+    summaries of their own, so they and everything under them are left out.
+    """
     found: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
         rel: str = os.path.relpath(dirpath, root)
         depth: int = 0 if rel == "." else rel.count(os.sep) + 1
-        if dirpath != root and (".git" in dirnames or ".git" in filenames):
+        if dirpath != root and (
+            ".git" in dirnames
+            or ".git" in filenames
+            or os.path.normpath(dirpath) in stop_at
+        ):
             dirnames[:] = []  # a submodule or vendored repo: a different project
             continue
         if depth >= max_depth:
             dirnames[:] = []
         else:
             dirnames[:] = sorted(
-                d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")
+                d for d in dirnames if d not in skip_dirs and not d.startswith(".")
             )
         if dirpath == root:
             continue
@@ -585,11 +705,18 @@ def nested_readmes(root: str, max_depth: int = 2) -> list[str]:
     return found
 
 
-def gather_context(repo_dir: str, budget: int) -> tuple[str, bool, str]:
+def gather_context(
+    repo_dir: str,
+    budget: int,
+    skip_dirs: frozenset[str] = SKIP_DIRS,
+    stop_at: frozenset[str] = frozenset(),
+    require_readme: bool = True,
+) -> tuple[str, bool, str]:
     """Collect the README and key project files of one repo, within budget chars.
 
     Returns (context, truncated, main_readme). context is '' when the repo has
-    no README at all, in which case it is skipped.
+    no README at all, in which case it is skipped; with require_readme False
+    (a --build-dirs unit) its build, dependency and CI files alone will do.
     """
     try:
         files: list[str] = os.listdir(repo_dir)
@@ -603,7 +730,7 @@ def gather_context(repo_dir: str, budget: int) -> tuple[str, bool, str]:
             readmes = ["docs/" + f for f in find_readmes(os.listdir(docs))]
         except OSError:
             readmes = []
-    if not readmes:
+    if not readmes and require_readme:
         return "", False, ""
 
     sections: list[tuple[str, str]] = []  # (title, text) in priority order
@@ -637,11 +764,21 @@ def gather_context(repo_dir: str, budget: int) -> tuple[str, bool, str]:
                 )
             )
 
+    # Without a README, only build and CI files make a directory worth a
+    # summary; a bare directory listing does not.
+    if not sections:
+        return "", False, ""
+
     # 4. Directory layout
-    sections.append(("Directory layout (top two levels)", dir_listing(repo_dir)))
+    sections.append(
+        (
+            "Directory layout (top two levels)",
+            dir_listing(repo_dir, skip_dirs=skip_dirs),
+        )
+    )
 
     # 5. READMEs of sub-components
-    for nested in nested_readmes(repo_dir):
+    for nested in nested_readmes(repo_dir, skip_dirs=skip_dirs, stop_at=stop_at):
         sections.append(
             (os.path.relpath(nested, repo_dir), read_text(nested, NESTED_README_CHARS))
         )
@@ -651,7 +788,7 @@ def gather_context(repo_dir: str, budget: int) -> tuple[str, bool, str]:
     # as truncated input.
     out: list[str] = []
     used: int = 0
-    truncated: bool = sections[0][1].endswith(TRUNC_MARK)
+    truncated: bool = bool(readmes) and sections[0][1].endswith(TRUNC_MARK)
     for title, text in sections:
         if not text.strip():
             continue
@@ -664,7 +801,236 @@ def gather_context(repo_dir: str, budget: int) -> tuple[str, bool, str]:
             break
         out.append(block)
         used += len(block)
-    return "".join(out), truncated, readmes[0]
+    return "".join(out), truncated, readmes[0] if readmes else ""
+
+
+# --------------------------------------------------------------------------- #
+# Unit discovery
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class Unit:
+    """One thing to summarize: a repo, submodule, worktree, bare repo or directory.
+
+    name is the key in the output: the path relative to the scanned directory
+    with '/' separators, which in flat mode is just the subdirectory name.
+    """
+
+    name: str
+    path: str
+    kind: str  # repo, submodule, worktree, bare or directory; '' in flat mode
+    readme: str = ""  # main README relative to path, '' when there is none
+    build: bool = False  # holds one of BUILD_MARKERS
+    parent: str | None = None  # name of the nearest enclosing unit
+    depth: int = 0  # number of enclosing units
+    children: list[str] = field(default_factory=list)
+    context: str = ""
+    truncated: bool = False
+    structure: str = ""  # the parent/children note for the prompt
+
+    @property
+    def project(self) -> str:
+        """The name the model is given: the last path component."""
+        return self.name.rsplit("/", 1)[-1]
+
+    @property
+    def label(self) -> str:
+        return KIND_LABELS.get(self.kind, self.kind)
+
+
+def git_file_kind(path: str) -> str:
+    """Kind of the linked working tree whose .git file is at path.
+
+    A worktree's gitdir lives under <repo>/.git/worktrees/; anything else,
+    normally <repo>/.git/modules/, is a submodule.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            head: str = f.read(4096)
+    except OSError:
+        return "submodule"
+    match = re.match(r"\s*gitdir:\s*(.+)", head)
+    gitdir: str = match.group(1).strip().replace("\\", "/") if match else ""
+    return "worktree" if "/worktrees/" in gitdir else "submodule"
+
+
+def is_bare_repo(dirnames: list[str], filenames: list[str]) -> bool:
+    """True for a directory holding a bare repository's HEAD, config, objects and refs."""
+    return (
+        "HEAD" in filenames
+        and "config" in filenames
+        and "objects" in dirnames
+        and "refs" in dirnames
+    )
+
+
+def git_kind(path: str, dirnames: list[str], filenames: list[str]) -> str:
+    """Return repo, submodule, worktree or bare for a directory, or '' if none."""
+    if ".git" in dirnames:
+        return "repo"
+    if ".git" in filenames:
+        return git_file_kind(os.path.join(path, ".git"))
+    if is_bare_repo(dirnames, filenames):
+        return "bare"
+    return ""
+
+
+def readme_in(path: str, dirnames: list[str], filenames: list[str]) -> str:
+    """The main README of a directory, chosen as gather_context does, or ''."""
+    readmes: list[str] = find_readmes(filenames)
+    if readmes:
+        return readmes[0]
+    if "docs" in dirnames:
+        try:
+            readmes = find_readmes(os.listdir(os.path.join(path, "docs")))
+        except OSError:
+            readmes = []
+        if readmes:
+            return "docs/" + readmes[0]
+    return ""
+
+
+def flat_units(basedir: str, exclude: frozenset[str] = frozenset()) -> list[Unit]:
+    """The units of flat mode: every immediate subdirectory, keyed by its name."""
+    units: list[Unit] = []
+    for subdir in get_dirs(basedir, exclude):
+        path: str = os.path.join(basedir, subdir)
+        try:
+            files: list[str] = os.listdir(path)
+        except OSError:
+            files = []
+        units.append(
+            Unit(
+                name=subdir,
+                path=path,
+                kind="",
+                build=any(f in BUILD_MARKERS for f in files),
+            )
+        )
+    return units
+
+
+def discover_units(
+    basedir: str, skip_dirs: frozenset[str] = SKIP_DIRS, build_dirs: bool = False
+) -> list[Unit]:
+    """Walk basedir and return its units in tree order, with parents assigned.
+
+    A unit is a git repository, submodule or worktree, a bare repository
+    (never descended into), a directory with a README or, with build_dirs, a
+    directory with a build file. Hidden directories, skip_dirs and the
+    scanned directory itself are not units. Each unit's parent is the nearest
+    unit enclosing it, whether or not that one has anything to summarize.
+    """
+    basedir = os.path.normpath(basedir)
+    units: list[Unit] = []
+    enclosing: list[Unit] = []  # the units on the way down from basedir
+    docs_of: set[str] = set()  # docs/ directories standing in as a README
+    for dirpath, dirnames, filenames in os.walk(basedir):
+        dirpath = os.path.normpath(dirpath)
+        while enclosing and not dirpath.startswith(enclosing[-1].path + os.sep):
+            enclosing.pop()
+        kind: str = git_kind(dirpath, dirnames, filenames)
+        readme: str = readme_in(dirpath, dirnames, filenames)
+        build: bool = any(f in BUILD_MARKERS for f in filenames)
+        if dirpath == basedir:
+            kind = ""
+        elif not kind and dirpath not in docs_of and (readme or (build_dirs and build)):
+            kind = "directory"
+        if kind == "bare":
+            dirnames[:] = []
+        else:
+            dirnames[:] = sorted(
+                d for d in dirnames if not d.startswith(".") and d not in skip_dirs
+            )
+        if not kind:
+            continue
+        parent: Unit | None = enclosing[-1] if enclosing else None
+        unit = Unit(
+            name=os.path.relpath(dirpath, basedir).replace(os.sep, "/"),
+            path=dirpath,
+            kind=kind,
+            readme=readme,
+            build=build,
+            parent=parent.name if parent else None,
+            depth=parent.depth + 1 if parent else 0,
+        )
+        if parent:
+            parent.children.append(unit.name)
+        if readme.startswith("docs/"):
+            docs_of.add(os.path.join(dirpath, "docs"))
+        units.append(unit)
+        enclosing.append(unit)
+    return units
+
+
+def shorten(text: str, limit: int) -> str:
+    """Collapse whitespace and cut at a word boundary within limit characters."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0] + "..."
+
+
+def readme_excerpt(path: str, limit: int = EXCERPT_CHARS) -> str:
+    """The first paragraph of prose in the README at path, on one line.
+
+    Headings, badges, HTML and code are passed over; the title stands in only
+    when there is no prose at all.
+    """
+    title: str = ""
+    for para in re.split(r"\n\s*\n", read_text(path, 8000)):
+        lines: list[str] = [ln.strip() for ln in para.splitlines() if ln.strip()]
+        if lines and HEADING_RULE_RE.match(lines[0]):
+            lines = lines[1:]  # an overline above an rst title
+        if not lines:
+            continue
+        if lines[0].startswith("#"):
+            title = title or lines[0].lstrip("#").strip()
+            lines = lines[1:]
+        elif len(lines) > 1 and HEADING_RULE_RE.match(lines[1]):
+            title = title or lines[0]
+            lines = lines[2:]
+        if not lines:
+            continue
+        flat: str = " ".join(lines)
+        if flat.startswith(("[![", "![", "<", "```", "|", "..", "---")):
+            continue
+        return shorten(flat, limit)
+    return shorten(title, limit)
+
+
+def structure_note(unit: Unit, units: dict[str, Unit]) -> str:
+    """Describe a unit's parent and children for the prompt; '' if it has neither."""
+    lines: list[str] = []
+    if unit.parent:
+        parent: Unit = units[unit.parent]
+        lines.append(
+            f"Parent: this project is the {unit.label} at "
+            f"'{unit.name[len(parent.name) + 1 :]}' inside the "
+            f"{parent.label} '{parent.name}'."
+        )
+    if unit.children:
+        lines.append("Sub-components inside this project, each summarized separately:")
+        for name in unit.children:
+            child: Unit = units[name]
+            line: str = f"- {name[len(unit.name) + 1 :]} ({child.label})"
+            if child.readme:
+                excerpt: str = readme_excerpt(os.path.join(child.path, child.readme))
+                if excerpt:
+                    line += ": " + excerpt
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def tree_fields(unit: Unit) -> dict[str, Any]:
+    """The entry fields that place a unit in the tree, written by --recursive."""
+    fields: dict[str, Any] = {"kind": unit.kind, "depth": unit.depth}
+    if unit.parent:
+        fields["parent"] = unit.parent
+    if unit.children:
+        fields["children"] = list(unit.children)
+    return fields
 
 
 # --------------------------------------------------------------------------- #
@@ -818,9 +1184,16 @@ def stream_chat(
 
 
 def pull_ai(
-    session: requests.Session, options: dict[str, Any], name: str, context: str
+    session: requests.Session,
+    options: dict[str, Any],
+    name: str,
+    context: str,
+    structure: str = "",
 ) -> tuple[str, bool]:
     """Summarize one repo. Return (summary, cut_off); raise RuntimeError on failure."""
+    template: str = (
+        USER_PROMPT_HEAD + (STRUCTURE_PROMPT if structure else "") + USER_PROMPT_TAIL
+    )
     payload: dict[str, Any] = {
         "model": options["model"],
         "temperature": TEMPERATURE,
@@ -830,7 +1203,9 @@ def pull_ai(
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": USER_PROMPT.format(name=name, context=context),
+                "content": template.format(
+                    name=name, context=context, structure=structure
+                ),
             },
         ],
     }
@@ -917,20 +1292,25 @@ def load_previous(path: str) -> dict[str, dict[str, Any]]:
     return repos if isinstance(repos, dict) else {}
 
 
-def cache_key(model: str, name: str, context: str) -> str:
-    """Hash of everything that shapes a summary, so any change redoes it."""
-    blob: str = json.dumps(
-        {
-            "v": CACHE_VERSION,
-            "model": model,
-            "system": SYSTEM_PROMPT,
-            "prompt": USER_PROMPT,
-            "temperature": TEMPERATURE,
-            "name": name,
-            "context": context,
-        },
-        sort_keys=True,
-    )
+def cache_key(model: str, name: str, context: str, structure: str = "") -> str:
+    """Hash of everything that shapes a summary, so any change redoes it.
+
+    The structure note and its prompt enter the hash only when present, so
+    keys made by flat mode are unchanged.
+    """
+    parts: dict[str, Any] = {
+        "v": CACHE_VERSION,
+        "model": model,
+        "system": SYSTEM_PROMPT,
+        "prompt": USER_PROMPT,
+        "temperature": TEMPERATURE,
+        "name": name,
+        "context": context,
+    }
+    if structure:
+        parts["structure"] = structure
+        parts["structure_prompt"] = STRUCTURE_PROMPT
+    blob: str = json.dumps(parts, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
@@ -1084,6 +1464,39 @@ def main() -> int:
         action="store_true",
         help="List what would be summarized, and what is cached, then exit",
     )
+    parser.add_argument(
+        "-r",
+        "--recursive",
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "Walk the whole tree instead of the immediate subdirectories: git "
+            "repos, submodules, worktrees, bare repos and directories with a "
+            "README become units that know their parent and children"
+        ),
+    )
+    parser.add_argument(
+        "--build-dirs",
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "Also summarize README-less directories that hold a build file "
+            "(Makefile, package.json, pyproject.toml, go.mod, ...)"
+        ),
+    )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        metavar="NAME",
+        help="Directory name to skip wherever it appears (repeatable)",
+    )
+    parser.add_argument(
+        "--include",
+        action="append",
+        metavar="NAME",
+        help=(
+            "Directory name to scan although it is skipped by default, such as "
+            "build or vendor (repeatable)"
+        ),
+    )
     args = parser.parse_args()
 
     options: dict[str, Any] = dict(DEFAULTS)
@@ -1117,6 +1530,15 @@ def main() -> int:
         parser.error("--context-chars must be at least 4000")
     if options["max_tokens"] != -1 and options["max_tokens"] < 1:
         parser.error("--max-tokens must be -1 or a positive number")
+    for key in ("exclude", "include"):
+        if not isinstance(options[key], list) or not all(
+            isinstance(name, str) and name for name in options[key]
+        ):
+            parser.error(f"--{key} must be a list of directory names")
+    # Directories left out of listings, nested READMEs and the recursive walk
+    skip_dirs: frozenset[str] = frozenset(
+        (set(SKIP_DIRS) | set(options["exclude"])) - set(options["include"])
+    )
 
     basedir: str = os.path.expanduser(options["directory"])
     output_path: str = os.path.expanduser(
@@ -1168,87 +1590,140 @@ def main() -> int:
                     "on the first request"
                 )
 
-            # Discovery: every subdirectory with a README, with its context ready
-            work: list[tuple[str, str, bool, str]] = []
-            for subdir in get_dirs(basedir):
-                context, truncated, readme = gather_context(
-                    os.path.join(basedir, subdir), budget
+            # Discovery: the units to summarize, each with its context ready.
+            # Flat mode keys them by subdirectory name, --recursive by path.
+            recursive: bool = options["recursive"]
+            if recursive:
+                units: list[Unit] = discover_units(
+                    basedir, skip_dirs, options["build_dirs"]
                 )
-                if context:
-                    work.append((subdir, context, truncated, readme))
+            else:
+                units = flat_units(basedir, frozenset(options["exclude"]))
+            by_name: dict[str, Unit] = {unit.name: unit for unit in units}
+            # Another unit's README belongs to its own summary, not a parent's
+            stop_at: frozenset[str] = (
+                frozenset(unit.path for unit in units) if recursive else frozenset()
+            )
+            work: list[Unit] = []
+            for unit in units:
+                unit.context, unit.truncated, unit.readme = gather_context(
+                    unit.path,
+                    budget,
+                    skip_dirs,
+                    stop_at,
+                    require_readme=not (options["build_dirs"] and unit.build),
+                )
+                if unit.context:
+                    if recursive:
+                        unit.structure = structure_note(unit, by_name)
+                    work.append(unit)
             if not work:
                 print(f"No READMEs found under {basedir}.")
                 return 0
 
             keys: dict[str, str] = {
-                subdir: cache_key(options["model"], subdir, context)
-                for subdir, context, _, _ in work
+                unit.name: cache_key(
+                    options["model"], unit.project, unit.context, unit.structure
+                )
+                for unit in work
             }
             # Keep the previous entries of repos still present, so an interrupted
             # run writes a file that loses nothing.
             repos.update(
                 {
-                    subdir: previous[subdir]
-                    for subdir, _, _, _ in work
-                    if subdir in previous
+                    unit.name: previous[unit.name]
+                    for unit in work
+                    if unit.name in previous
                 }
             )
 
             if args.dry_run:
-                print(f"Found {len(work)} repos with a README under {basedir}")
-                cached: int = 0
-                for subdir, context, truncated, readme in work:
-                    status: str = cache_status(
-                        previous.get(subdir), keys[subdir], args.force
-                    )
-                    fresh: bool = status == "cached"
-                    cached += fresh
-                    extra: str = ", input truncated" if truncated else ""
+                if recursive:
                     print(
-                        f"  {status:8} {subdir}  ({readme}, {len(context):,} chars{extra})"
+                        f"Found {len(units)} units under {basedir}, "
+                        f"{len(work)} with something to summarize"
                     )
-                print(f"{cached} cached, {len(work) - cached} to summarize")
+                else:
+                    print(f"Found {len(work)} repos with a README under {basedir}")
+                cached: int = 0
+                for unit in units if recursive else work:
+                    # In recursive mode a kind column and indentation show the
+                    # tree; flat mode prints what it always has.
+                    label: str = f"{unit.kind:10}" if recursive else ""
+                    label += "  " * unit.depth + unit.name
+                    if not unit.context:
+                        why: str = "no README"
+                        if options["build_dirs"]:
+                            why += " or build file"
+                        print(f"  {'skipped':8} {label}  ({why})")
+                        continue
+                    status: str = cache_status(
+                        previous.get(unit.name), keys[unit.name], args.force
+                    )
+                    cached += status == "cached"
+                    extra: str = ", input truncated" if unit.truncated else ""
+                    print(
+                        f"  {status:8} {label}  ({unit.readme or 'build files'}, "
+                        f"{len(unit.context):,} chars{extra})"
+                    )
+                skipped: str = (
+                    f", {len(units) - len(work)} skipped" if recursive else ""
+                )
+                print(f"{cached} cached, {len(work) - cached} to summarize{skipped}")
                 return 0
 
-            for index, (subdir, context, truncated, readme) in enumerate(work, 1):
-                tag: str = f"[{index}/{len(work)}] {subdir}"
-                info: dict[str, str] = git_info(os.path.join(basedir, subdir))
-                if not args.force and is_fresh(previous.get(subdir), keys[subdir]):
-                    entry: dict[str, Any] = dict(previous[subdir])
+            for index, unit in enumerate(work, 1):
+                name: str = unit.name
+                tag: str = f"[{index}/{len(work)}] {name}"
+                info: dict[str, str] = git_info(unit.path)
+                if not args.force and is_fresh(previous.get(name), keys[name]):
+                    entry: dict[str, Any] = dict(previous[name])
                     entry.pop("git", None)
+                    for key in TREE_KEYS:
+                        entry.pop(key, None)
                     if info:
                         entry["git"] = info
-                    repos[subdir] = entry
+                    if recursive:
+                        entry.update(tree_fields(unit))
+                    repos[name] = entry
                     print(f"{tag}: cached")
                     continue
 
-                print(f"{tag}: summarizing {len(context):,} chars ", end="", flush=True)
+                print(
+                    f"{tag}: summarizing {len(unit.context):,} chars ",
+                    end="",
+                    flush=True,
+                )
                 started: float = time.monotonic()
                 try:
-                    summary, cut = pull_ai(session, options, subdir, context)
+                    summary, cut = pull_ai(
+                        session, options, unit.project, unit.context, unit.structure
+                    )
                 except RuntimeError as ex:
-                    failed.append(subdir)
-                    stderr.write(f"\n[error] {subdir}: {ex}\n")
+                    failed.append(name)
+                    stderr.write(f"\n[error] {name}: {ex}\n")
                     continue
                 print(f"done in {time.monotonic() - started:.0f}s", flush=True)
                 if cut:
                     stderr.write(
-                        f"[warning] {subdir}: summary cut off at "
+                        f"[warning] {name}: summary cut off at "
                         f"{options['max_tokens']} tokens; it will be retried next "
                         "run unless --max-tokens is raised\n"
                     )
                 entry = {
                     "summary": summary,
-                    "hash": keys[subdir],
+                    "hash": keys[name],
                     "summarized": utc_now(),
-                    "readme": readme,
-                    "context_chars": len(context),
-                    "context_truncated": truncated,
+                    "readme": unit.readme,
+                    "context_chars": len(unit.context),
+                    "context_truncated": unit.truncated,
                     "summary_truncated": cut,
                 }
                 if info:
                     entry["git"] = info
-                repos[subdir] = entry
+                if recursive:
+                    entry.update(tree_fields(unit))
+                repos[name] = entry
                 if not options["quiet"]:
                     print(f"{summary}\n")
                 write()
